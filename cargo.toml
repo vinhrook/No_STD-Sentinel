@@ -1,9 +1,9 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/Sentinel-core",
-    "crates/Sentinel-proto",
-    "crates/Sentinel-tinyml",
+    "crates/sentinel-core",
+    "crates/sentinel-proto",
+    "crates/sentinel-tinyml",
     "crates/sentinel-firmware",
     "crates/sentinel-gateway",
     "crates/sentinel-dashboard",
@@ -20,3 +20,11 @@ authors = ["Vinh"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/vinhrook/Sentinel"
   
+[workspace.dependencies]
+# the core domain crate
+sentinel-core = { path = "crates/sentinel-core" }
+sentinel-proto = { path = "crates/sentinel-proto" }
+sentinel-tinyml = { path = "crates/sentinel-tinyml" }
+sentinel-sim = { path = "crates/sentinel-sim" }
+
+# shared Dependencies
