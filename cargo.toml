@@ -27,4 +27,77 @@ sentinel-proto = { path = "crates/sentinel-proto" }
 sentinel-tinyml = { path = "crates/sentinel-tinyml" }
 sentinel-sim = { path = "crates/sentinel-sim" }
 
-# shared Dependencies
+# Serializetion (no_std )
+serde =  { version = "1.0", default-features = false, features = ["derive"] }
+postcard = { version = "1.1", features = ["alloc"] }
+serde_json = "1.0"
+cilborium = "0.2" # CBOR encoding for IoT
+
+# Error handling 
+thiserror = "2.0" 
+defmt = "3.0" 
+
+# Embassy (bare-metal async runtime)
+embassy-excutor = { version = "0.7", features = ["nightly"] }
+embassy-time = "0.4"
+embassy-sync = "0.6"
+embassy-net = { version = "0.6", features = ["tcp", "dns", "dhcpv4"] }
+
+# Esp32-s3 hardwear 
+esp-hal = { version = "0.23", features = ["esp32s3"] }
+esp-wifi = { version = "0.12", features = ["wifi', "esp32s3"] }
+esp-mbedtls = "0.4"
+esp-storage = "0.4"
+
+Gateway (std, Tokio ecosystem)
+tokio = { version = "1.43", features = ["full"]}
+axum = "0.7" # web framework
+axum-extra      = { version = "0.10", features = ["typed-header"] }
+tower-http      = { version = "0.6", features = ["cors", "compression-gzip", "trace"] }
+rusqlite        = { version = "0.32", features = ["bundled", "backup"] }
+refinery        = { version = "0.8", features = ["rusqlite"] }  # SQL migrations
+rumqttc         = { version = "0.24", features = ["use-rustls"] }
+reqwest         = { version = "0.12", features = ["json", "rustls-tls"] }
+tokio-tungstenite = "0.24"
+
+
+# Dashboard (Leptos WASM)
+leptos          = { version = "0.7", features = ["csr"] }
+leptos_router   = "0.7"
+leptos_axum     = "0.7"   # SSR integration
+
+
+# TinyML (no_std inference)
+burn-core       = { version = "0.16", default-features = false }
+burn-ndarray    = { version = "0.16", default-features = false }
+microfft        = "0.6"
+
+# CLI Tooling
+clap            = { version = "4.5", features = ["derive"] }
+espflash        = "3.2"
+serialport      = "4.5"
+indicatif       = "0.17"  # Progress bars for flash/OTA
+
+# Observability
+tracing              = "0.1"
+tracing-subscriber   = { version = "0.3", features = ["json", "env-filter"] }
+
+
+# Testing
+proptest        = "1.5"   # Property-based testing for math
+approx          = "0.5"   # Floating-point comparison in tests
+
+[profile.release]
+opt-level    = "z"        # Size-optimized (critical for MCU flash)
+lto          = true       # Link-Time Optimization across crate boundaries
+codegen-units = 1         # Maximum optimization (slower compile, smaller binary)
+strip        = true       # Strip debug symbols from release binary
+panic        = "abort"    # No unwind tables (saves ~20 KB on MCU)
+
+[profile.dev]
+opt-level    = 1          # Slight optimization in dev (Embassy needs it)
+
+# Firmware-specific: maximum size reduction
+[profile.release.package.sentinel-firmware]
+opt-level    = "z"
+overflow-checks = true    # KEEP overflow checks in production firmware
