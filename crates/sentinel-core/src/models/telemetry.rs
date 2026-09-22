@@ -24,7 +24,7 @@
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FreezerReading {
     pub device_id: u32,
     pub timestamp_secs: u64,
@@ -58,7 +58,7 @@ impl FreezerReading {
 }
 
 impl Default for FreezerReading {
-    fn defalut() -> Self {
+    fn default() -> Self {
         Self {
             device_id: 0,
             timestamp_secs: 0,
@@ -66,7 +66,7 @@ impl Default for FreezerReading {
             door_open: false,
             door_open_secs: 0,
             health_score: 1000,
-            ressi_dbm: -50,
+            rssi_dbm: -50,
             firmware_version: 10000,
         }
     }
@@ -81,9 +81,70 @@ impl TopicBuilder {
         let suffix = b"/telemetry";
         let hex = device_id.as_hex();
 
-        topic[..9].copy_from_slice(perfix);
+        topic[..9].copy_from_slice(prefix);
         topic[9..17].copy_from_slice(&hex);
         topic[17..27].copy_from_slice(suffix);
         topic
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_id_from_mac() {
+        let mac = [0xAA, 0xBB, 0x00, 0xA4, 0xF3, 0xB2];
+        let id = DeviceId::from_mac_tail(mac);
+        assert_eq!(id.0, 0x00A4F3B2);
+    }
+
+    #[test]
+    fn device_id_hex_format() {
+        let id = DeviceId(0x00A4F3B2);
+        let hex = id.as_hex();
+        assert_eq!(&hex, b"00A4F3B2");
+    }
+
+    #[test]
+    fn temp_display_negative() {
+        let r = FreezerReading { temp_centi_c: -1850, ..Default::default() };
+        let (int, frac) = r.temp_display_parts();
+        assert_eq!(int, -18);
+        assert_eq!(frac, 50);
+    }
+
+    #[test]
+    fn temp_display_positive() {
+        let r = FreezerReading { temp_centi_c: 520, ..Default::default() };
+        let (int, frac) = r.temp_display_parts();
+        assert_eq!(int, 5);
+        assert_eq!(frac, 20);
+    }
+
+    #[test]
+    fn critical_threshold() {
+        let cold = FreezerReading { temp_centi_c: -1200, ..Default::default() };
+        assert!(!cold.is_temp_critical());
+
+        let warm = FreezerReading { temp_centi_c: -800, ..Default::default() };
+        assert!(warm.is_temp_critical());
+    }
+
+    #[test]
+    fn topic_builder_format() {
+        let id = DeviceId(0x00A4F3B2);
+        let topic = TopicBuilder::telemetry_topic(id);
+        let topic_str = core::str::from_utf8(&topic[..27]).expect("valid UTF-8");
+        assert_eq!(topic_str, "sentinel/00A4F3B2/telemetry");
+    }
+
+    #[test]
+    fn default_reading_is_healthy() {
+        let r = FreezerReading::default();
+        assert_eq!(r.health_score, 1000);
+        assert!(!r.is_temp_critical());
+        assert!(!r.is_temp_warning()); 
+
     }
 }

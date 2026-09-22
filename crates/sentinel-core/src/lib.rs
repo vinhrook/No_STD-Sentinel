@@ -2,4 +2,5 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
-pub mod telemetry;
+pub mod models;
+pub use models::telemetry;
