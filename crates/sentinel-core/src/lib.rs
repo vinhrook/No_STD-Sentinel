@@ -1,4 +1,5 @@
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
+#![deny(unsafe_code)]
+#![warn(missing_docs)]
 
-pub mod math;
-pub mod models; 
+pub mod telemetry;
