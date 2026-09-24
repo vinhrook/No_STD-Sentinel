@@ -254,22 +254,23 @@ pub struct FreezerReading {
     pub temp: TempSentiC,
     pub door_open: bool,
     pub door_open_secs: u16,
-    pub health_score: u16,
+    pub health_score: HealthScore,
     pub rssi_dbm: i8,
-    pub firmware_version: u32,
+    pub firmware_version: FirmwareVersion,
 }
 
 impl FreezerReading {
-    pub const HEALTH_MAX: u16 = 1_000;
+    pub const HEALTH_MAX: u16 = HealthScore::MAX;
+
     pub const PLACEHOLDER: Self = Self {
         device_id: DeviceId::ZERO,
         timestamp_secs: 0,
         temp: TempCentiC::from_centi(thresholds::NORMAL_MAX.as_centi() - 500),
         door_open: false,
         door_open_secs: 0,
-        health_score: Self::HEALTH_MAX,
+        health_score: HealthScore::new(HealthScore::MAX),
         rssi_dbm: -50,
-        firmware_version: 10_000, // v1.0.0
+        firmware_version: FirmwareVersion::new(1, 0, 0),
     };
     #[must_use]
     pub const fn 
