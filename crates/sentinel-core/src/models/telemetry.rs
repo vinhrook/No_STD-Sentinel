@@ -308,3 +308,36 @@ impl Default for FreezerReading {
         Self::PLACEHOLDER
     }
 }
+
+/// Topics Like MQTT Topic
+pub mod topics {
+    use super::DeviceId;
+    pub const PREFIX: &[u8; 10] = b"/telemetry";
+    pub const LEN: usize = PREFIX.len() + 8 + SUFFIX.len();
+
+    #[must_use]
+    pub const fn telemetry(device: DeviceId) -> [u8; LEN] {
+        let hex = device.as_hex();
+        let mut buf = [0u8; LEN];
+        let mut i = 0;
+        while i < PREFIX.len() {
+            buf[i] = PREFIX[i];
+            i += 1;
+        }
+        let mut j = 0;
+        while j < 8 {
+            buf[PREFIX.len() + j] = hex[j];
+            j += 1;
+        }
+        let mut k = 0;
+        while k < SUFFIX.len() {
+            buf[PREFIX.len() + 8 + k] = SUFFIX[k];
+            k += 1;
+        }
+        buf
+    }
+    #[must_use]
+    pub fn as_str(topic: &[u8; LEN]) -> &str {
+        core::str::from_utf8(topic).expect("topic is ASCII by construction")
+    }
+}
