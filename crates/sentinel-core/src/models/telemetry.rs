@@ -1,7 +1,7 @@
-/// written For 'no_std' (ESP32) : No heap , no 'format!', stack buffers only
-/// And 'const fn' everywhere the language allows it.
-
-#![cfg_attr(not(test), no_std)]
+//! Written for `no_std` (ESP32):
+//! - No heap allocations, no `format!`
+//! - Fixed stack buffers only
+//! - Uses `const fn` wherever the language permits
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -29,7 +29,7 @@ impl fmt::Display for ParseIdError {
 impl core::error::Error for ParseIdError {}
 
 impl DeviceId {
-    pub const ZERO: self = self(0);
+    pub const ZERO: Self = Self(0);
     /// Wrap a raw 'u32'
     #[must_use]
     pub const fn new(raw: u32) -> Self {
@@ -69,7 +69,7 @@ impl DeviceId {
         let mut buf = [b'0'; 8];
         let mut i = 0;
         while i < 8 {
-            buf[i] = DIGITS[(self.0 >> (28 - i * 4)) & 0xF) as usize];
+            buf[i] = DIGITS[((self.0 >> (28 - i * 4)) & 0xF) as usize];
             i += 1;
         }
         buf
@@ -98,7 +98,7 @@ impl From<DeviceId> for u32 {
 
 /// TempCentiC
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub struct TempCentiC(i16);
 
@@ -130,7 +130,7 @@ impl fmt::Display for TempCentiC {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let v = self.0;
         if v < 0 {
-            f.write_str("-");
+            f.write_str("-")?;
         }
         let mag = v.unsigned_abs();
         write!(f, "{}.{:02}", mag / 100, mag % 100)
@@ -157,8 +157,8 @@ pub mod thresholds {
 }
 
 /// TemperatureStatus
-#[derive(Debug, Clone, Copy, ParitalEq, Eq, PartialOrd, Ord, Hash)]
-#[derive(serde::Serialize, serde::Deserilaize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 #[repr(u8)]
 pub enum TemperatureStatus {
@@ -184,7 +184,7 @@ impl TemperatureStatus {
 
 impl fmt::Display for TemperatureStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str());
+        f.write_str(self.as_str())
     }
 }
 
@@ -251,7 +251,7 @@ impl From<FirmwareVersion> for u32 {
 pub struct FreezerReading {
     pub device_id: DeviceId,
     pub timestamp_secs: u64,
-    pub temp: TempSentiC,
+    pub temp: TempCentiC,
     pub door_open: bool,
     pub door_open_secs: u16,
     pub health_score: HealthScore,
@@ -293,7 +293,7 @@ impl FreezerReading {
     #[must_use]
     pub const fn temp_display_parts(&self) -> (i16, u16) {
         let centi = self.temp.as_centi();
-        let degrees = centi / 100;
+        let degree = centi / 100;
         let rem = centi % 100;
         (degree, if rem < 0 { (-rem) as u16 } else { rem as u16 })
     }
@@ -312,7 +312,8 @@ impl Default for FreezerReading {
 /// Topics Like MQTT Topic
 pub mod topics {
     use super::DeviceId;
-    pub const PREFIX: &[u8; 10] = b"/telemetry";
+    pub const PREFIX: &[u8; 9] = b"sentinel/";
+    pub const SUFFIX: &[u8; 10] = b"/telemetry";
     pub const LEN: usize = PREFIX.len() + 8 + SUFFIX.len();
 
     #[must_use]
@@ -339,5 +340,71 @@ pub mod topics {
     #[must_use]
     pub fn as_str(topic: &[u8; LEN]) -> &str {
         core::str::from_utf8(topic).expect("topic is ASCII by construction")
+    }
+}
+
+
+/// tests 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const TEST_ID: DeviceId = DeviceId::from_mac_tail([0xAA, 0xBB, 0x00, 0xA4, 0xF3, 0xB2]);
+
+    fn reading_with_temp(centi: i16) -> FreezerReading {
+        FreezerReading {
+            temp: TempCentiC::from_centi(centi),
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn device_id_from_mac() {
+        assert_eq!(TEST_ID.as_u32(), 0x00A4_F3B2);
+    }
+
+    #[test]
+    fn device_id_hex_format() {
+        let hex = TEST_ID.as_hex();
+        assert_eq!(&hex, b"00A4F3B2");
+    }
+
+    #[test]
+    fn temp_display_negative() {
+        let r = reading_with_temp(-1850);
+        let (int, frac) = r.temp_display_parts();
+        assert_eq!(int, -18);
+        assert_eq!(frac, 50);
+    }
+
+    #[test]
+    fn temp_display_positive() {
+        let r = reading_with_temp(520);
+        let (int, frac) = r.temp_display_parts();
+        assert_eq!(int, 5);
+        assert_eq!(frac, 20);
+    }
+
+    #[test]
+    fn critical_threshold() {
+        let cold = reading_with_temp(-1200);
+        assert!(!cold.is_temp_critical());
+
+        let warm = reading_with_temp(-800);
+        assert!(warm.is_temp_critical());
+    }
+
+    #[test]
+    fn topic_telemetry_format() {
+        let topic = topics::telemetry(TEST_ID);
+        let topic_str = topics::as_str(&topic);
+        assert_eq!(topic_str, "sentinel/00A4F3B2/telemetry");
+    }
+
+    #[test]
+    fn default_reading_is_healthy() {
+        let r = FreezerReading::default();
+        assert_eq!(r.health_score.as_u16(), 1000);
+        assert!(!r.is_temp_critical());
+        assert!(!r.is_temp_warning());
     }
 }
