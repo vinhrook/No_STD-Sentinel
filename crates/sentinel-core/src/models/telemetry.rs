@@ -6,6 +6,8 @@
 #![warn(missing_docs)]
 
 use core::fmt;
+/// Device Id
+
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
@@ -40,3 +42,65 @@ impl DeviceId {
         buf
     }
 }
+
+impl fmt::Display for DeviceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let hex = self.as_hex();
+        let s = core::str::from_utf8(&hex).expect("DeviceId hex is ASCII");
+        f.write_str(s)
+    }
+}
+
+impl From<u32> for DeviceId {
+    fn from(raw: u32) -> Self {
+        Self(raw)
+    }
+}
+
+impl From<DeviceId> for u32 {
+    fn from(id: DeviceId) -> Self {
+        id.0
+    }
+}
+
+/// TempCentiC
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Ord, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct TempCentiC(i16);
+
+impl TempCentiC {
+    #[must_use]
+    pub const fn from_centi(centi: i16) -> Self {
+        Self(centi)
+
+    }
+    #[must_use]
+    pub const fn as_centi(self) -> i16 {
+        self.0
+    }
+}
+
+impl fmt::Display for TempCentiC {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let v = self.0;
+        if v < 0 {
+            f.write_str("-");
+        }
+        let mag = v.unsigned_abs();
+        write!(f, "{}.{:02}", mag / 100, mag % 100)
+    }
+}
+
+impl From<i16> for TempCentiC {
+    fn from(centi: i16) -> Self {
+        Self(centi)
+    }
+}
+
+impl From<TempCentiC> for i16 {
+    fn from(t: TempCentiC) -> Self {
+        t.0
+    }
+}
+
