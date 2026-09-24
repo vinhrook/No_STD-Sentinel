@@ -273,5 +273,38 @@ impl FreezerReading {
         firmware_version: FirmwareVersion::new(1, 0, 0),
     };
     #[must_use]
-    pub const fn 
+    pub const fn temperature_status(&self) -> TemperatureStatus {
+        match self.temp.const_cmp(thresholds::WARNING_MAX) {
+            core::cmp::Ordering::Greater => TemperatureStatus::Critical,
+            _ => match self.temp.const_cmp(thresholds::NORMAL_MAX) {
+                core::cmp::Ordering::Greater => TemperatureStatus::Warning,
+                _ => TemperatureStatus::Normal,
+            },
+        }
+    }
+    #[must_use]
+    pub const fn is_temp_critical(&self) -> bool {
+        matches!(self.temperature_status(), TemperatureStatus::Critical)
+    }
+    #[must_use]
+    pub const fn is_temp_warning(&self) -> bool {
+        self.temperature_status().is_alert()
+    }
+    #[must_use]
+    pub const fn temp_display_parts(&self) -> (i16, u16) {
+        let centi = self.temp.as_centi();
+        let degrees = centi / 100;
+        let rem = centi % 100;
+        (degree, if rem < 0 { (-rem) as u16 } else { rem as u16 })
+    }
+    #[must_use]
+    pub const fn firmware_parts(&self) -> (u32, u8, u8) {
+        self.firmware_version.parts()
+    }
+}
+
+impl Default for FreezerReading {
+    fn default() -> Self {
+        Self::PLACEHOLDER
+    }
 }
