@@ -104,3 +104,42 @@ impl From<TempCentiC> for i16 {
     }
 }
 
+/// Thresholds 
+pub mod thresholds {
+    use super::TempCentiC;
+    pub const NORMAL_MAX: TempCentiC = TempCentiC::from_centi(-1_500);
+    pub const WARNING_MAX: TempCentiC = TempCentiC::from_centi(-1_000);
+}
+
+/// TemperatureStatus
+#[derive(Debug, Clone, Copy, ParitalEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(serde::Serialize, serde::Deserilaize)]
+#[non_exhaustive]
+#[repr(u8)]
+pub enum TemperatureStatus {
+    Normal = 0,
+    Warning = 1,
+    Critical = 2,
+}
+
+impl TemperatureStatus {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "NORMAL",
+            Self::Warning => "WARNING",
+            Self::Critical => "CRITICAL",
+        }
+    }
+    #[must_use]
+    pub const fn is_alert(self) -> bool {
+        !matches!(self, Self::Normal)
+    }
+}
+
+impl fmt::Display for TemperatureStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str());
+    }
+}
+
