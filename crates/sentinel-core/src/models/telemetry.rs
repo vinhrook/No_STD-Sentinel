@@ -348,6 +348,7 @@ pub mod topics {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
     use super::*;
     const TEST_ID: DeviceId = DeviceId::from_mac_tail([0xAA, 0xBB, 0x00, 0xA4, 0xF3, 0xB2]);
 
@@ -381,6 +382,76 @@ mod tests {
         assert_eq!(DeviceId::from_hex(b"00A4F3B2"), Ok(TEST_ID));
         assert_eq!(DeviceId::from_hex(b"00a4f3b2"), Ok(TEST_ID));
         assert_eq!(DeviceId::from_hex(&TEST_ID.as_hex()), Ok(TEST_ID));
+    }
+
+    #[test]
+    fn device_id_from_hex_rejects_bad_digit() {
+        assert_eq!(
+            DeviceId::from_hex(b"00A4F3BZ"),
+            Err(ParseIdError::BadDigit(b'Z'))
+        );
+    }
+
+    #[test]
+    fn device_id_u32_round_trip() {
+        let id = DeviceId::from(0xDEAD_BEEF);
+        assert_eq!(u32::from(id), 0xDEAD_BEEF);
+        assert_eq!(DeviceId::ZERO.as_u32(), 0);
+    }
+
+    #[test]
+    fn parse_id_error_is_std_error() {
+        fn assert_error<T: core::error::Error>() {}
+        assert_error::<ParseIdError>();
+        assert_eq!(
+           std::format!("{}", ParseIdError::BadDigit(b'Z')),
+            "invalid hex digit: 0x5A"
+        );
+    }
+
+    #[test]
+    fn device_id_display() {
+        assert_eq!(std::format!("{}",TEST_ID), "00A4F3B2");
+    }
+
+    // Thresholds
+    #[test]
+    fn thresholds_are_ordered() {
+        assert!(thresholds::NORMAL_MAX.as_centi() < thresholds::WARNING_MAX.as_centi());
+    }
+
+    // TempCentiC
+    #[test]
+    fn temp_const_cmpordering() {
+        let cold = TempCentiC::from_centi(-1500);
+        let warm = TempCentiC::from_centi(-1000);
+        assert_eq!(cold.const_cmp(warm), core::cmp::Ordering::Less);
+        assert_eq!(warm.const_cmp(cold), core::cmp::Ordering::Greater);
+        assert_eq!(cold.const_cmp(cold), core::cmp::Ordering::Equal);
+        assert!(cold < warm);
+    }
+
+    #[test]
+    fn temp_display_negative() {
+        assert_eq!(std::format!("{}", reading_with_temp(-1850).temp), "-18.50");
+    }
+
+    #[test]
+    fn temp_display_positive() {
+        assert_eq!(std::format!("{}", reading_with_temp(520).temp), "5.20");
+    }
+
+    #[test]
+    fn temp_display_positive_zero_keeps_sign() {
+        assert_eq!(std::format!("{}", reading_with_temp(-5).temp), "-0.05");
+    }
+
+    #[test]
+    fn temp_display_parts_split() {
+        assert_eq!(reading_with_temp(-1850).temp_display_parts(), (-18, 50));
+        assert_eq!(reading_with_temp(520).temp_display_parts(), (5, 20));
+        assert_eq!(reading_with_temp(-1800).temp_display_parts(), (-18, 0));
+        assert_eq!(reading_with_temp(0).temp_display_parts(), (0, 0));
     }
 
 }
