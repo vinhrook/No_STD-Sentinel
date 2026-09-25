@@ -224,7 +224,7 @@ pub struct FirmwareVersion(u32);
 impl FirmwareVersion {
     #[must_use]
     pub const fn new(major: u32, minor: u8, patch: u8) -> Self {
-        assert!(major < 100, "firmware minor must be < 100");
+        assert!(minor < 100, "firmware minor must be < 100");
         assert!(patch < 100, "firmware patch must be < 100");
         Self(major * 10_000 + minor as u32 * 100 + patch as u32)
     }
@@ -453,5 +453,57 @@ mod tests {
         assert_eq!(reading_with_temp(-1800).temp_display_parts(), (-18, 0));
         assert_eq!(reading_with_temp(0).temp_display_parts(), (0, 0));
     }
+
+    // HealthScore
+    
+    #[test]
+    fn health_score_const_new() {
+        const H: HealthScore = HealthScore::new(1_000);
+        assert_eq!(H.as_u16(), 1_000);
+        assert_eq!(HealthScore::ZERO.as_u16(), 0);
+        assert_eq!(u16::from(H), 1_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "HealthScore out of range")]
+    fn health_score_rejects_over_max() {
+        let _ = HealthScore::new(1_001);
+    }
+
+// FirmwareVersion
+
+    #[test]
+    fn firmware_version_new_and_parts() {
+        const V: FirmwareVersion = FirmwareVersion::new(1, 2, 3);
+        assert_eq!(V.as_u32(), 10_203);
+        assert_eq!(V.parts(), (1, 2, 3));
+        assert_eq!(u32::from(V), 10_203);
+    }
+
+    #[test]
+    #[should_panic(expected = "firmware minor must be < 100")]
+    fn firmware_version_rejects_bad_minor() {
+        let _ = FirmwareVersion::new(1, 100, 0);
+    }
+
+// Temprature status boundaries
+    #[test]
+    fn status_normal_at_boundary() {
+        let r = reading_with_temp(-1500);
+        assert_eq!(r.temperature_status(), TemperatureStatus::Normal);
+        assert!(!r.is_temp_warning());
+        assert!(!r.is_temp_critical());
+    }
+
+    #[test]
+    fn status_warning_just_above_normal() {
+        let r = reading_with_temp(-1499);
+        assert_eq!(r.temperature_status(), TemperatureStatus::Warning);
+        assert!(!r.is_temp_critical());
+        assert!(r.is_temp_warning());
+    }
+
+
+    
 
 }
