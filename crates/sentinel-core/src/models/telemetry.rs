@@ -265,17 +265,53 @@ impl From<HealthScore> for u16 {
 
 
 /// FirmwareVersion
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FirmwareVersionError { Major, Minor, Patch }
+
+impl fmt::Display for FirmwareVersionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let p = match self { Self::Major => "major <= 429496", Self::Minor => "minor < 100",
+    Self::Patch => "patch < 100" };
+        write!(f, "invalid firmware {p}")
+    }
+}
+impl core::error::Error for FirmwareVersionError {}
+
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(transparent)]
+#[serde(try_from = "u32", into = "u32")]
 pub struct FirmwareVersion(u32);
 
+impl TryFrom<u32> for FirmwareVersion {
+    type Error = FirmwareVersionError;
+
+    fn try_from(raw: u32) -> Result<Self, Self::Error> {
+        let major = raw / 10_000;
+        let minor = ((raw / 100) % 100) as u8;
+        let patch = (raw % 100) as u8;
+        Self::try_new(major, minor, patch)
+    }
+}
+
 impl FirmwareVersion {
+    pub const MAX_MAJOR: u32 = u32::MAX / 10_000;
+
+    pub const fn try_new(major: u32, minor: u8, patch: u8) -> Result<Self,
+    FirmwareVersionError> {
+        if major > Self::MAX_MAJOR { Err(FirmwareVersionError::Major) }
+        else if minor >= 100 { Err(FirmwareVersionError::Minor) }
+        else if patch >= 100 { Err(FirmwareVersionError::Patch) }
+        else { Ok(Self(major * 10_000 + minor as u32 * 100 + patch as u32)) }
+    }
+
     #[must_use]
     pub const fn new(major: u32, minor: u8, patch: u8) -> Self {
-        assert!(minor < 100, "firmware minor must be < 100");
-        assert!(patch < 100, "firmware patch must be < 100");
-        Self(major * 10_000 + minor as u32 * 100 + patch as u32)
+        match Self::try_new(major, minor, patch) {
+            Ok(v) => v,
+            Err(FirmwareVersionError::Major) => panic!("firmware major must be <= 429496"),
+            Err(FirmwareVersionError::Minor) => panic!("firmware minor must be < 100"),
+            Err(FirmwareVersionError::Patch) => panic!("firmware patch must be < 100"),
+        }
     }
     #[must_use]
     pub const fn as_u32(self) -> u32 {
@@ -285,6 +321,13 @@ impl FirmwareVersion {
     pub const fn parts(self) -> (u32, u8, u8) {
         let v = self.0;
         (v / 10_000, ((v / 100) % 100) as u8, (v % 100) as u8)
+    }
+}
+
+impl fmt::Display for FirmwareVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (major, minor, patch) = self.parts();
+        write!(f, "{major}.{minor}.{patch}")
     }
 }
 
@@ -669,6 +712,26 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(r.firmware_parts(), (1, 2, 3));
+    }
+    #[test]
+    fn firmware_version_display() {
+        assert_eq!(std::format!("{}", FirmwareVersion::new(1, 2, 3)), "1.2.3");
+        assert_eq!(std::format!("{}", FirmwareVersion::new(0, 0, 0)), "0.0.0");
+    }
+    #[test]
+    fn firmware_version_try_new() {
+        assert_eq!(FirmwareVersion::try_new(1, 2, 3).map(|v| v.parts()), Ok((1, 2, 3)));
+        assert_eq!(
+            FirmwareVersion::try_new(FirmwareVersion::MAX_MAJOR + 1, 0, 0),
+            Err(FirmwareVersionError::Major)
+        );
+        assert_eq!(FirmwareVersion::try_new(1, 100, 0), Err(FirmwareVersionError::Minor));
+        assert_eq!(FirmwareVersion::try_new(1, 0, 100), Err(FirmwareVersionError::Patch));
+    }
+    #[test]
+    #[should_panic(expected = "firmware major must be <= 429496")]
+    fn firmware_version_rejects_overflow_major() {
+        let _ = FirmwareVersion::new(500_000, 0, 0);
     }
 
 // topics
