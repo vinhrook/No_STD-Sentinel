@@ -216,30 +216,53 @@ impl fmt::Display for TemperatureStatus {
 
 
 /// HealthScore
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HealthScoreError(pub u16);
+
+impl fmt::Display for HealthScoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "health score {} exceeds max 1000", self.0)
+    }
+}
+impl core::error::Error for HealthScoreError {}
+
+/// Healthscore representing health from '0' to '1000'
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(transparent)]
+#[serde(try_from = "u16", into = "u16")]
 pub struct HealthScore(u16);
 
 impl HealthScore {
     pub const MAX: u16 = 1_000;
-    pub const ZERO: Self = Self::new(0);
+    pub const ZERO: Self = Self(0);
+
+    pub const fn try_new(score: u16) -> Result<Self, HealthScoreError> {
+        if score <= Self::MAX { Ok(Self(score)) } else { Err(HealthScoreError(score)) }
+    }
+
     #[must_use]
     pub const fn new(score: u16) -> Self {
-        assert!(score <= Self::MAX, "HealthScore out of range 0..=1000");
-        Self(score)
+        match Self::try_new(score) {
+            Ok(v) => v,
+            Err(_) => panic!("HealthScore out of range 0..=1000"),
+        }
     }
     #[must_use]
-    pub const fn as_u16(self) -> u16 {
-        self.0
+    pub const fn new_saturating(score: u16) -> Self {
+        Self(if score > Self::MAX { Self::MAX } else { score })
     }
+    #[must_use]
+    pub const fn as_u16(self) -> u16 { self.0 }
 }
 
-impl From<HealthScore> for u16 {
-    fn from(h: HealthScore) -> Self {
-        h.0
-    }
+impl TryFrom<u16> for HealthScore {
+    type Error = HealthScoreError;
+    fn try_from(v: u16) -> Result<Self, Self::Error> { Self::try_new(v) }
 }
+impl From<HealthScore> for u16 {
+    fn from(h: HealthScore) -> Self { h.0 }
+}
+
 
 /// FirmwareVersion
 #[repr(transparent)]
@@ -516,6 +539,35 @@ mod tests {
     fn health_score_rejects_over_max() {
         let _ = HealthScore::new(1_001);
     }
+
+    #[test]
+    fn health_score_try_new() {
+        assert_eq!(HealthScore::try_new(0).map(|h| h.as_u16()), Ok(0));
+        assert_eq!(HealthScore::try_new(1000).map(|h| h.as_u16()), Ok(1000));
+        assert_eq!(
+            HealthScore::try_new(1001),
+            Err(HealthScoreError(1001))
+        );
+    }
+
+    #[test]
+    fn health_score_saturating() {
+        assert_eq!(HealthScore::new_saturating(500).as_u16(), 500);
+        assert_eq!(HealthScore::new_saturating(2000).as_u16(), 1000);
+    }
+
+    #[test]
+    fn health_score_serde_enforces_invariant() {
+        let valid_json = "950";
+        let score: Result<HealthScore, _> = serde_json::from_str(valid_json);
+        assert_eq!(score.unwrap().as_u16(), 950);
+        
+        // Invalid score over 100 Must be rejected by Serde
+        let invalid_json = "1001";
+        let result: Result<HealthScore, _> = serde_json::from_str(invalid_json);
+        assert!(result.is_err());
+    }
+
 
 // FirmwareVersion
 
