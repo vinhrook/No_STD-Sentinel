@@ -337,6 +337,10 @@ impl FreezerReading {
     }
     #[must_use]
     pub const fn is_temp_warning(&self) -> bool {
+        matches!(self.temperature_status(), TemperatureStatus::Warning)
+    }
+    #[must_use]
+    pub const fn is_temp_alert(&self) -> bool {
         self.temperature_status().is_alert()
     }
     #[must_use]
@@ -615,18 +619,26 @@ mod tests {
         let r = reading_with_temp(-999);
         assert_eq!(r.temperature_status(), TemperatureStatus::Critical);
         assert!(r.is_temp_critical());
-        assert!(r.is_temp_warning());
+        assert!(!r.is_temp_warning());
+        assert!(r.is_temp_alert());
     }
 
     #[test]
-    fn warning_covers_critical() {
-        let warm = reading_with_temp(-800);
-        assert!(warm.is_temp_critical());
-        assert!(warm.is_temp_warning());
+    fn test_temperature_status_predicates() {
+        let critical = reading_with_temp(-800);
+        assert!(critical.is_temp_critical());
+        assert!(!critical.is_temp_warning());
+        assert!(critical.is_temp_alert());
 
-        let mild = reading_with_temp(-1200);
-        assert!(!mild.is_temp_critical());
-        assert!(mild.is_temp_warning());
+        let warning = reading_with_temp(-1200);
+        assert!(!warning.is_temp_critical());
+        assert!(warning.is_temp_warning());
+        assert!(warning.is_temp_alert());
+
+        let normal = reading_with_temp(-1800);
+        assert!(!normal.is_temp_critical());
+        assert!(!normal.is_temp_warning());
+        assert!(!normal.is_temp_alert());
     }
 
     #[test]
