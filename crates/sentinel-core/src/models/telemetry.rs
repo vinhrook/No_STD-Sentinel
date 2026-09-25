@@ -503,7 +503,81 @@ mod tests {
         assert!(r.is_temp_warning());
     }
 
+    #[test]
+    fn status_warning_at_critical_boundary() {
+        let r = reading_with_temp(-1000);
+        assert_eq!(r.temperature_status(), TemperatureStatus::Warning);
+        assert!(!r.is_temp_critical());
+        assert!(r.is_temp_warning());
+    }
 
+    #[test]
+    fn status_critical_just_above_boundary() {
+        let r = reading_with_temp(-999);
+        assert_eq!(r.temperature_status(), TemperatureStatus::Critical);
+        assert!(r.is_temp_critical());
+        assert!(r.is_temp_warning());
+    }
+
+    #[test]
+    fn warning_covers_critical() {
+        let warm = reading_with_temp(-800);
+        assert!(warm.is_temp_critical());
+        assert!(warm.is_temp_warning());
+
+        let mild = reading_with_temp(-1200);
+        assert!(!mild.is_temp_critical());
+        assert!(mild.is_temp_warning());
+    }
+
+    #[test]
+    fn status_lables_and_ordering() {
+        assert_eq!(TemperatureStatus::Critical.as_str(), "CRITICAL");
+        assert_eq!(std::format!("{}",TemperatureStatus::Warning), "WARNING");
+        assert!(TemperatureStatus::Critical.is_alert());
+        assert!(!TemperatureStatus::Normal.is_alert());
+        assert!(TemperatureStatus::Critical > TemperatureStatus::Warning);
+    }
+
+// Default reading
+    #[test]
+    fn defalut_reading_is_healthy() {
+        let r = FreezerReading::default();
+        assert_eq!(r.health_score.as_u16(), FreezerReading::HEALTH_MAX);
+        assert_eq!(r.temperature_status(), TemperatureStatus::Normal);
+        assert!(!r.is_temp_critical());
+        assert!(!r.is_temp_warning());
+        assert_eq!(FreezerReading::PLACEHOLDER, r);
+    }
+
+// firmwareversion
+    #[test]
+    fn firmware_parts_v1_2_3() {
+        let r = FreezerReading {
+            firmware_version: FirmwareVersion::new(1, 2, 3),
+            ..Default::default()
+        };
+        assert_eq!(r.firmware_parts(), (1, 2, 3));
+    }
+
+// topics
+    #[test]
+    fn topic_i_exact_lenght() {
+        let topic = topics::telemetry(TEST_ID);
+        assert_eq!(topic.len(), topics::LEN);
+        assert_eq!(topics::as_str(&topic), "sentinel/00A4F3B2/telemetry");
+        assert!(!topic.contains(&0));
+    }
     
+    #[test]
+    fn topic_zero_id() {
+        let topic = topics::telemetry(DeviceId::ZERO);
+        assert_eq!(&topic, b"sentinel/00000000/telemetry");
+    }
+    const CT_TOPIC:[u8; topics::LEN] = topics::telemetry(TEST_ID);
 
+    #[test]
+    fn telemetry_topic_const_eval() {
+        assert_eq!(&CT_TOPIC, b"sentinel/00A4F3B2/telemetry");
+    }
 }
