@@ -124,6 +124,16 @@ impl TempCentiC {
             core::cmp::Ordering::Equal
         }
     }
+    #[must_use]
+    pub const fn display_parts(self) -> TempParts {
+        let is_negative = self.0 < 0;
+        let mag = self.0.unsigned_abs();
+        TempParts {
+            is_negative,
+            whole: mag / 100,
+            centis: (mag % 100) as u8,
+        }
+    }
 }
 
 impl fmt::Display for TempCentiC {
@@ -149,6 +159,22 @@ impl From<TempCentiC> for i16 {
     }
 }
 
+/// Deconstructed temperature components with explicit sign semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TempParts {
+    pub is_negative: bool,
+    pub whole: u16,
+    pub centis: u8,
+}
+
+impl fmt::Display for TempParts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_negative {
+            f.write_str("-")?;
+        }
+        write!(f, "{}.{:02}", self.whole, self.centis)
+    }
+}
 /// Thresholds 
 pub mod thresholds {
     use super::TempCentiC;
@@ -291,11 +317,8 @@ impl FreezerReading {
         self.temperature_status().is_alert()
     }
     #[must_use]
-    pub const fn temp_display_parts(&self) -> (i16, u16) {
-        let centi = self.temp.as_centi();
-        let degree = centi / 100;
-        let rem = centi % 100;
-        (degree, if rem < 0 { (-rem) as u16 } else { rem as u16 })
+    pub const fn temp_display_parts(&self) -> TempParts {
+        self.temp.display_parts()
     }
     #[must_use]
     pub const fn firmware_parts(&self) -> (u32, u8, u8) {
@@ -448,10 +471,34 @@ mod tests {
 
     #[test]
     fn temp_display_parts_split() {
-        assert_eq!(reading_with_temp(-1850).temp_display_parts(), (-18, 50));
-        assert_eq!(reading_with_temp(520).temp_display_parts(), (5, 20));
-        assert_eq!(reading_with_temp(-1800).temp_display_parts(), (-18, 0));
-        assert_eq!(reading_with_temp(0).temp_display_parts(), (0, 0));
+        // Deep sub-zero
+        let r = reading_with_temp(-1850).temp_display_parts();
+        assert!(r.is_negative);
+        assert_eq!((r.whole, r.centis), (18, 50));
+
+        // Positive
+        let r = reading_with_temp(520).temp_display_parts();
+        assert!(!r.is_negative);
+        assert_eq!((r.whole, r.centis), (5, 20));
+        assert_eq!(std::format!("{}", r), "5.20");
+        
+        // The Edge case that was previously broken: -0.50 C
+        let r = reading_with_temp(-50).temp_display_parts();
+        assert!(r.is_negative);
+        assert_eq!((r.whole, r.centis), (0, 50));
+        assert_eq!(std::format!("{}", r), "-0.50");
+
+        // Tiny negative: -0.05 C
+        let r = reading_with_temp(-5).temp_display_parts();
+        assert!(r.is_negative);
+        assert_eq!((r.whole, r.centis), (0, 5));
+        assert_eq!(std::format!("{}", r), "-0.05");
+
+        // Exact zero: 0.00 C
+        let r = reading_with_temp(0).temp_display_parts();
+        assert!(!r.is_negative);
+        assert_eq!((r.whole, r.centis), (0, 0));
+        assert_eq!(std::format!("{}", r), "0.00");
     }
 
     // HealthScore
