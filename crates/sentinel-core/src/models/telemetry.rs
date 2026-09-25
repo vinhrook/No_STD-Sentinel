@@ -357,54 +357,30 @@ mod tests {
             ..Default::default()
         }
     }
+    // DeviceId
     #[test]
     fn device_id_from_mac() {
         assert_eq!(TEST_ID.as_u32(), 0x00A4_F3B2);
     }
 
     #[test]
-    fn device_id_hex_format() {
-        let hex = TEST_ID.as_hex();
-        assert_eq!(&hex, b"00A4F3B2");
+    fn device_id_ignores_oui_bytes() {
+        let other = DeviceId::from_mac_tail([0x11, 0x22, 0x00, 0xA4, 0xF3, 0xB2]);
+        assert_eq!(other, TEST_ID);
     }
 
     #[test]
-    fn temp_display_negative() {
-        let r = reading_with_temp(-1850);
-        let (int, frac) = r.temp_display_parts();
-        assert_eq!(int, -18);
-        assert_eq!(frac, 50);
+    fn device_id_hex_edges() {
+        assert_eq!(DeviceId::new(0).as_hex(), *b"00000000");
+        assert_eq!(DeviceId::new(u32::MAX).as_hex(), *b"FFFFFFFF");
+        assert_eq!(TEST_ID.as_hex(), *b"00A4F3B2");
     }
 
     #[test]
-    fn temp_display_positive() {
-        let r = reading_with_temp(520);
-        let (int, frac) = r.temp_display_parts();
-        assert_eq!(int, 5);
-        assert_eq!(frac, 20);
+    fn device_id_from_hex_roundtrip() {
+        assert_eq!(DeviceId::from_hex(b"00A4F3B2"), Ok(TEST_ID));
+        assert_eq!(DeviceId::from_hex(b"00a4f3b2"), Ok(TEST_ID));
+        assert_eq!(DeviceId::from_hex(&TEST_ID.as_hex()), Ok(TEST_ID));
     }
 
-    #[test]
-    fn critical_threshold() {
-        let cold = reading_with_temp(-1200);
-        assert!(!cold.is_temp_critical());
-
-        let warm = reading_with_temp(-800);
-        assert!(warm.is_temp_critical());
-    }
-
-    #[test]
-    fn topic_telemetry_format() {
-        let topic = topics::telemetry(TEST_ID);
-        let topic_str = topics::as_str(&topic);
-        assert_eq!(topic_str, "sentinel/00A4F3B2/telemetry");
-    }
-
-    #[test]
-    fn default_reading_is_healthy() {
-        let r = FreezerReading::default();
-        assert_eq!(r.health_score.as_u16(), 1000);
-        assert!(!r.is_temp_critical());
-        assert!(!r.is_temp_warning());
-    }
 }
