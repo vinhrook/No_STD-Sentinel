@@ -1,20 +1,45 @@
-//! Written for `no_std` (ESP32):
-//! - No heap allocations, no `format!`
-//! - Fixed stack buffers only
-//! - Uses `const fn` wherever the language permits
+//! Telemetry domain types, fixed-point representations, and serialization invariants.
+//!
+//! Designed specifically for high-assurance, `no_std` embedded microcontrollers (such as ESP32):
+//! - **Zero heap allocations:** No dynamic strings, no heap vectors, and no runtime formatters.
+//! - **Fixed stack buffers:** Wire protocol encoding operates entirely over stack-allocated byte arrays.
+//! - **Compile-time evaluation:** Core conversions, comparisons, and layout calculations are marked `const fn`.
+//! - **Bit-exact invariants:** Strongly-typed wrappers prevent unit mismatches and out-of-range sensor readings.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 use core::fmt;
-/// Device Id
 
+/// A 32-bit unique hardware identifier for a Sentinel device node.
+///
+/// Typically derived from the lower 4 bytes of an IEEE 802 EUI-48 (MAC) address,
+/// discarding the vendor-assigned 24-bit OUI (Organizationally Unique Identifier).
+/// Formatted as an 8-character uppercase ASCII hexadecimal string for human-readable
+/// logging and zero-allocation MQTT topic construction.
+///
+/// # Invariants
+///
+/// - Transparent wrapper around [`u32`].
+/// - Serializes transparently as an unsigned 32-bit integer.
+///
+/// # Examples
+///
+/// ```
+/// use sentinel_core::telemetry::DeviceId;
+///
+/// let id = DeviceId::new(0x00A4_F3B2);
+/// assert_eq!(id.as_u32(), 0x00A4_F3B2);
+/// assert_eq!(&id.as_hex(), b"00A4F3B2");
+/// ```
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub struct DeviceId(u32); 
 
+/// Error returned when parsing a [`DeviceId`] from an ASCII hexadecimal byte slice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParseIdError {
+    /// An invalid ASCII byte was encountered outside the `[0-9A-Fa-f]` ranges.
     BadDigit(u8),
 }
 
@@ -29,17 +54,59 @@ impl fmt::Display for ParseIdError {
 impl core::error::Error for ParseIdError {}
 
 impl DeviceId {
+    /// The default all-zeros sentinel device identifier (`0x00000000`).
     pub const ZERO: Self = Self(0);
-    /// Wrap a raw 'u32'
+
+    /// Wraps a raw 32-bit integer as a [`DeviceId`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sentinel_core::telemetry::DeviceId;
+    ///
+    /// let id = DeviceId::new(0xDEAD_BEEF);
+    /// assert_eq!(id.as_u32(), 0xDEAD_BEEF);
+    /// ```
     #[must_use]
     pub const fn new(raw: u32) -> Self {
         Self(raw)
     }
+
+    /// Extracts a [`DeviceId`] from the last 4 bytes of a 6-byte EUI-48 MAC address.
+    ///
+    /// The first 2 bytes (`mac[0..2]`) belonging to the 24-bit OUI prefix are ignored.
+    /// The remaining 4 bytes (`mac[2..6]`) are decoded as big-endian.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sentinel_core::telemetry::DeviceId;
+    ///
+    /// let mac = [0xAA, 0xBB, 0x00, 0xA4, 0xF3, 0xB2];
+    /// let id = DeviceId::from_mac_tail(mac);
+    /// assert_eq!(id.as_u32(), 0x00A4_F3B2);
+    /// ```
     #[must_use]
     pub const fn from_mac_tail(mac: [u8; 6]) -> Self {
         Self(u32::from_be_bytes([mac[2], mac[3], mac[4], mac[5]]))
     }
 
+    /// Parses an 8-byte hexadecimal ASCII representation into a [`DeviceId`].
+    ///
+    /// Accepts both uppercase (`'A'..='F'`) and lowercase (`'a'..='f'`) characters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseIdError::BadDigit`] if any byte is not a valid ASCII hex character.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sentinel_core::telemetry::DeviceId;
+    ///
+    /// let id = DeviceId::from_hex(b"00A4F3B2").unwrap();
+    /// assert_eq!(id.as_u32(), 0x00A4_F3B2);
+    /// ```
     #[must_use]
     pub const fn from_hex(hex: &[u8; 8]) -> Result<Self, ParseIdError> {
         let mut v: u32 = 0;
@@ -58,11 +125,24 @@ impl DeviceId {
         Ok(Self(v))
     }
 
+    /// Returns the underlying raw [`u32`] identifier.
     #[must_use]
     pub const fn as_u32(self) -> u32 {
         self.0
     }
 
+    /// Formats the device identifier into an 8-byte uppercase hexadecimal ASCII buffer.
+    ///
+    /// Does not allocate; the result is returned directly on the stack.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sentinel_core::telemetry::DeviceId;
+    ///
+    /// let id = DeviceId::new(0x00A4_F3B2);
+    /// assert_eq!(&id.as_hex(), b"00A4F3B2");
+    /// ```
     #[must_use]
     pub const fn as_hex(self) -> [u8; 8] {
         const DIGITS: [u8; 16] = *b"0123456789ABCDEF";
@@ -96,22 +176,57 @@ impl From<DeviceId> for u32 {
     }
 }
 
-/// TempCentiC
+/// Fixed-point temperature representation in centi-degrees Celsius (0.01 °C / 10 m°C).
+///
+/// Backed by a signed 16-bit integer ([`i16`]), providing a representable temperature range
+/// of `-327.68 °C` to `+327.67 °C`.
+///
+/// ### Why Fixed-Point?
+/// On resource-constrained bare-metal targets (or soft-float FPUs), floating-point operations
+/// introduce code bloat, non-deterministic execution times, and potential NaN/Infinity serialization issues.
+/// Fixed-point centi-degrees eliminate float inaccuracies while preserving 2 decimal places of precision.
+///
+/// # Examples
+///
+/// ```
+/// use sentinel_core::telemetry::TempCentiC;
+///
+/// let temp = TempCentiC::from_centi(-1850);
+/// assert_eq!(temp.as_centi(), -1850);
+/// ```
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub struct TempCentiC(i16);
 
 impl TempCentiC {
+    /// Creates a [`TempCentiC`] from a raw integer count of hundredths of a degree Celsius.
+    ///
+    /// Example: `-1850` represents `-18.50 °C`.
     #[must_use]
     pub const fn from_centi(centi: i16) -> Self {
         Self(centi)
-
     }
+
+    /// Returns the raw temperature value in centi-degrees Celsius.
     #[must_use]
     pub const fn as_centi(self) -> i16 {
         self.0
     }
+
+    /// Compares two [`TempCentiC`] instances in a compile-time `const` context.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sentinel_core::telemetry::TempCentiC;
+    /// use core::cmp::Ordering;
+    ///
+    /// const COLD: TempCentiC = TempCentiC::from_centi(-1800);
+    /// const WARM: TempCentiC = TempCentiC::from_centi(-1000);
+    /// const CMP: Ordering = COLD.const_cmp(WARM);
+    /// assert_eq!(CMP, Ordering::Less);
+    /// ```
     #[must_use]
     pub const fn const_cmp(self, other: Self) -> core::cmp::Ordering {
         let a = self.0;
@@ -124,6 +239,11 @@ impl TempCentiC {
             core::cmp::Ordering::Equal
         }
     }
+
+    /// Deconstructs the temperature into sign, whole degrees, and fractional centis.
+    ///
+    /// Correctly handles the subtle `-0.xx °C` case (e.g. `-0.50 °C`) where integer division
+    /// by 100 yields `0`, which would otherwise lose the negative sign in basic integer formatting.
     #[must_use]
     pub const fn display_parts(self) -> TempParts {
         let is_negative = self.0 < 0;
@@ -160,10 +280,16 @@ impl From<TempCentiC> for i16 {
 }
 
 /// Deconstructed temperature components with explicit sign semantics.
+///
+/// Designed to format temperatures into strings or displays without heap allocation, avoiding
+/// the common integer truncation bug where `-0.50 °C` prints as `0.50 °C`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TempParts {
+    /// True if the temperature is strictly below `0.00 °C`.
     pub is_negative: bool,
+    /// Absolute whole degree component (`|centi| / 100`).
     pub whole: u16,
+    /// Fractional hundredths of a degree (`|centi| % 100`), in `0..=99`.
     pub centis: u8,
 }
 
@@ -175,25 +301,41 @@ impl fmt::Display for TempParts {
         write!(f, "{}.{:02}", self.whole, self.centis)
     }
 }
-/// Thresholds 
+
+/// Standard cold-chain freezer operating thresholds.
 pub mod thresholds {
     use super::TempCentiC;
+
+    /// The upper limit for normal deep-freeze storage (-15.00 °C).
+    ///
+    /// Temperatures at or below this limit are considered [`TemperatureStatus::Normal`](super::TemperatureStatus::Normal).
     pub const NORMAL_MAX: TempCentiC = TempCentiC::from_centi(-1_500);
+
+    /// The upper limit for warned storage before critical failure (-10.00 °C).
+    ///
+    /// Temperatures above this threshold are classified as [`TemperatureStatus::Critical`](super::TemperatureStatus::Critical).
     pub const WARNING_MAX: TempCentiC = TempCentiC::from_centi(-1_000);
 }
 
-/// TemperatureStatus
+/// Operational temperature health status of a monitored freezer unit.
+///
+/// Mapped directly to alert tiers for supervisory dashboards, cold-chain compliance,
+/// and automated relay trip logic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[derive(serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 #[repr(u8)]
 pub enum TemperatureStatus {
+    /// Operating within nominal deep-freeze range (<= -15.00 °C).
     Normal = 0,
+    /// Elevated temperature warning (-15.00 °C < temp <= -10.00 °C). Inspection recommended.
     Warning = 1,
+    /// Critical high-temperature threshold breached (> -10.00 °C). Immediate intervention required.
     Critical = 2,
 }
 
 impl TemperatureStatus {
+    /// Returns the uppercase ASCII status label (`"NORMAL"`, `"WARNING"`, or `"CRITICAL"`).
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -202,6 +344,8 @@ impl TemperatureStatus {
             Self::Critical => "CRITICAL",
         }
     }
+
+    /// Returns `true` if the status indicates an abnormal state requiring operator attention.
     #[must_use]
     pub const fn is_alert(self) -> bool {
         !matches!(self, Self::Normal)
@@ -214,32 +358,70 @@ impl fmt::Display for TemperatureStatus {
     }
 }
 
-
-/// HealthScore
+/// Error indicating that a health score exceeded the maximum allowable value of 1,000.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct HealthScoreError(pub u16);
+pub struct HealthScoreError(
+    /// The invalid raw score that caused the error.
+    pub u16,
+);
 
 impl fmt::Display for HealthScoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "health score {} exceeds max 1000", self.0)
     }
 }
+
 impl core::error::Error for HealthScoreError {}
 
-/// Healthscore representing health from '0' to '1000'
+/// Normalized device reliability and operational health score, constrained to `0..=1000`.
+///
+/// Represents unit health from `0.0%` (complete hardware/communication failure) to `100.0%`
+/// (optimal nominal telemetry). Serde serialization enforces this invariant via `try_from = "u16"`.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "u16", into = "u16")]
 pub struct HealthScore(u16);
 
 impl HealthScore {
+    /// Maximum permissible health score (1,000, corresponding to 100.0%).
     pub const MAX: u16 = 1_000;
+
+    /// Minimum health score (0, corresponding to failed/decommissioned unit).
     pub const ZERO: Self = Self(0);
 
+    /// Attempts to create a [`HealthScore`], returning an error if `score > 1000`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HealthScoreError`] if `score` exceeds [`HealthScore::MAX`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sentinel_core::telemetry::HealthScore;
+    ///
+    /// let score = HealthScore::try_new(950).unwrap();
+    /// assert_eq!(score.as_u16(), 950);
+    /// assert!(HealthScore::try_new(1001).is_err());
+    /// ```
     pub const fn try_new(score: u16) -> Result<Self, HealthScoreError> {
         if score <= Self::MAX { Ok(Self(score)) } else { Err(HealthScoreError(score)) }
     }
 
+    /// Creates a [`HealthScore`], panicking if `score > 1000`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `score` exceeds [`HealthScore::MAX`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sentinel_core::telemetry::HealthScore;
+    ///
+    /// let score = HealthScore::new(1000);
+    /// assert_eq!(score.as_u16(), 1000);
+    /// ```
     #[must_use]
     pub const fn new(score: u16) -> Self {
         match Self::try_new(score) {
@@ -247,10 +429,23 @@ impl HealthScore {
             Err(_) => panic!("HealthScore out of range 0..=1000"),
         }
     }
+
+    /// Creates a [`HealthScore`] saturating at [`HealthScore::MAX`] if out of bounds.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sentinel_core::telemetry::HealthScore;
+    ///
+    /// let score = HealthScore::new_saturating(1500);
+    /// assert_eq!(score.as_u16(), 1000);
+    /// ```
     #[must_use]
     pub const fn new_saturating(score: u16) -> Self {
         Self(if score > Self::MAX { Self::MAX } else { score })
     }
+
+    /// Returns the raw health score integer value in `0..=1000`.
     #[must_use]
     pub const fn as_u16(self) -> u16 { self.0 }
 }
@@ -259,24 +454,44 @@ impl TryFrom<u16> for HealthScore {
     type Error = HealthScoreError;
     fn try_from(v: u16) -> Result<Self, Self::Error> { Self::try_new(v) }
 }
+
 impl From<HealthScore> for u16 {
     fn from(h: HealthScore) -> Self { h.0 }
 }
 
-
-/// FirmwareVersion
+/// Error conditions encountered when constructing or parsing a [`FirmwareVersion`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FirmwareVersionError { Major, Minor, Patch }
+pub enum FirmwareVersionError {
+    /// Major version exceeded the maximum packable limit of 429,496.
+    Major,
+    /// Minor version was greater than or equal to 100.
+    Minor,
+    /// Patch version was greater than or equal to 100.
+    Patch,
+}
 
 impl fmt::Display for FirmwareVersionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let p = match self { Self::Major => "major <= 429496", Self::Minor => "minor < 100",
-    Self::Patch => "patch < 100" };
+        let p = match self {
+            Self::Major => "major <= 429496",
+            Self::Minor => "minor < 100",
+            Self::Patch => "patch < 100",
+        };
         write!(f, "invalid firmware {p}")
     }
 }
+
 impl core::error::Error for FirmwareVersionError {}
 
+/// Compact decimal-packed semantic version (`MAJOR.MINOR.PATCH`).
+///
+/// Encoded into a single 32-bit integer as `major * 10,000 + minor * 100 + patch`.
+/// - `major`: `0..=429,496`
+/// - `minor`: `0..=99`
+/// - `patch`: `0..=99`
+///
+/// This compact representation allows version exchange across low-bandwidth mesh radios,
+/// CAN-bus frames, and atomic register comparisons without dynamic string allocations.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "u32", into = "u32")]
@@ -294,16 +509,49 @@ impl TryFrom<u32> for FirmwareVersion {
 }
 
 impl FirmwareVersion {
+    /// Maximum allowable major version number (429,496) before overflowing a [`u32`].
     pub const MAX_MAJOR: u32 = u32::MAX / 10_000;
 
-    pub const fn try_new(major: u32, minor: u8, patch: u8) -> Result<Self,
-    FirmwareVersionError> {
-        if major > Self::MAX_MAJOR { Err(FirmwareVersionError::Major) }
-        else if minor >= 100 { Err(FirmwareVersionError::Minor) }
-        else if patch >= 100 { Err(FirmwareVersionError::Patch) }
-        else { Ok(Self(major * 10_000 + minor as u32 * 100 + patch as u32)) }
+    /// Attempts to construct a [`FirmwareVersion`] from components.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FirmwareVersionError`] if `major > 429,496`, `minor >= 100`, or `patch >= 100`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sentinel_core::telemetry::FirmwareVersion;
+    ///
+    /// let ver = FirmwareVersion::try_new(1, 2, 3).unwrap();
+    /// assert_eq!(ver.parts(), (1, 2, 3));
+    /// ```
+    pub const fn try_new(major: u32, minor: u8, patch: u8) -> Result<Self, FirmwareVersionError> {
+        if major > Self::MAX_MAJOR {
+            Err(FirmwareVersionError::Major)
+        } else if minor >= 100 {
+            Err(FirmwareVersionError::Minor)
+        } else if patch >= 100 {
+            Err(FirmwareVersionError::Patch)
+        } else {
+            Ok(Self(major * 10_000 + minor as u32 * 100 + patch as u32))
+        }
     }
 
+    /// Constructs a [`FirmwareVersion`], panicking if components violate range limits.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `major > 429,496`, `minor >= 100`, or `patch >= 100`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sentinel_core::telemetry::FirmwareVersion;
+    ///
+    /// let ver = FirmwareVersion::new(2, 4, 1);
+    /// assert_eq!(ver.parts(), (2, 4, 1));
+    /// ```
     #[must_use]
     pub const fn new(major: u32, minor: u8, patch: u8) -> Self {
         match Self::try_new(major, minor, patch) {
@@ -313,10 +561,23 @@ impl FirmwareVersion {
             Err(FirmwareVersionError::Patch) => panic!("firmware patch must be < 100"),
         }
     }
+
+    /// Returns the underlying decimal-packed 32-bit version representation.
     #[must_use]
     pub const fn as_u32(self) -> u32 {
         self.0
     }
+
+    /// Unpacks the version into `(major, minor, patch)` components.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sentinel_core::telemetry::FirmwareVersion;
+    ///
+    /// let ver = FirmwareVersion::new(1, 20, 9);
+    /// assert_eq!(ver.parts(), (1, 20, 9));
+    /// ```
     #[must_use]
     pub const fn parts(self) -> (u32, u8, u8) {
         let v = self.0;
@@ -337,23 +598,36 @@ impl From<FirmwareVersion> for u32 {
     }
 }
 
-/// FreezerReading 
+/// Comprehensive telemetry record emitted by a Sentinel cold-storage sensor node.
+///
+/// Contains environmental metrics, hardware tamper/door events, signal strength,
+/// device diagnostics, and firmware metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct FreezerReading {
+    /// Unique 32-bit hardware node identifier.
     pub device_id: DeviceId,
+    /// Unix timestamp in seconds since epoch (UTC).
     pub timestamp_secs: u64,
+    /// Ambient freezer temperature in centi-degrees Celsius (0.01 °C resolution).
     pub temp: TempCentiC,
+    /// Instantaneous door switch state (`true` = open, `false` = closed).
     pub door_open: bool,
+    /// Continuous duration in seconds the door has remained unsealed.
     pub door_open_secs: u16,
+    /// Aggregate hardware health and link score (`0..=1000`).
     pub health_score: HealthScore,
+    /// Received Signal Strength Indication (RSSI) in dBm.
     pub rssi_dbm: i8,
+    /// Node firmware version.
     pub firmware_version: FirmwareVersion,
 }
 
 impl FreezerReading {
+    /// Maximum possible health score constant (1,000).
     pub const HEALTH_MAX: u16 = HealthScore::MAX;
 
+    /// Nominal placeholder reading used for default initialization and offline testing.
     pub const PLACEHOLDER: Self = Self {
         device_id: DeviceId::ZERO,
         timestamp_secs: 0,
@@ -364,6 +638,8 @@ impl FreezerReading {
         rssi_dbm: -50,
         firmware_version: FirmwareVersion::new(1, 0, 0),
     };
+
+    /// Evaluates the temperature reading against configured operating thresholds.
     #[must_use]
     pub const fn temperature_status(&self) -> TemperatureStatus {
         match self.temp.const_cmp(thresholds::WARNING_MAX) {
@@ -374,22 +650,32 @@ impl FreezerReading {
             },
         }
     }
+
+    /// Returns `true` if temperature exceeds [`thresholds::WARNING_MAX`].
     #[must_use]
     pub const fn is_temp_critical(&self) -> bool {
         matches!(self.temperature_status(), TemperatureStatus::Critical)
     }
+
+    /// Returns `true` if temperature is in warning range (`NORMAL_MAX < temp <= WARNING_MAX`).
     #[must_use]
     pub const fn is_temp_warning(&self) -> bool {
         matches!(self.temperature_status(), TemperatureStatus::Warning)
     }
+
+    /// Returns `true` if temperature is either in warning or critical status.
     #[must_use]
     pub const fn is_temp_alert(&self) -> bool {
         self.temperature_status().is_alert()
     }
+
+    /// Deconstructs the sensor temperature into signed display components.
     #[must_use]
     pub const fn temp_display_parts(&self) -> TempParts {
         self.temp.display_parts()
     }
+
+    /// Unpacks the firmware version into `(major, minor, patch)`.
     #[must_use]
     pub const fn firmware_parts(&self) -> (u32, u8, u8) {
         self.firmware_version.parts()
@@ -402,13 +688,33 @@ impl Default for FreezerReading {
     }
 }
 
-/// Topics Like MQTT Topic
+/// Compile-time and runtime ASCII MQTT topic generation.
+///
+/// Produces fixed-size byte buffers formatted as `sentinel/<DEVICE_HEX>/telemetry`
+/// without allocating heap memory or using formatters.
 pub mod topics {
     use super::DeviceId;
+
+    /// The topic prefix byte sequence (`"sentinel/"`).
     pub const PREFIX: &[u8; 9] = b"sentinel/";
+
+    /// The topic suffix byte sequence (`"/telemetry"`).
     pub const SUFFIX: &[u8; 10] = b"/telemetry";
+
+    /// Total byte length of a fully rendered telemetry topic (27 bytes).
     pub const LEN: usize = PREFIX.len() + 8 + SUFFIX.len();
 
+    /// Constructs a fixed-size ASCII byte array representing the MQTT telemetry topic for a device.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sentinel_core::telemetry::{topics, DeviceId};
+    ///
+    /// let id = DeviceId::new(0x00A4_F3B2);
+    /// let topic = topics::telemetry(id);
+    /// assert_eq!(topics::as_str(&topic), "sentinel/00A4F3B2/telemetry");
+    /// ```
     #[must_use]
     pub const fn telemetry(device: DeviceId) -> [u8; LEN] {
         let hex = device.as_hex();
@@ -430,14 +736,15 @@ pub mod topics {
         }
         buf
     }
+
+    /// Converts a validated topic buffer into a `&str` reference.
+    ///
+    /// Guaranteed not to panic because topic bytes are ASCII by construction.
     #[must_use]
     pub fn as_str(topic: &[u8; LEN]) -> &str {
         core::str::from_utf8(topic).expect("topic is ASCII by construction")
     }
 }
-
-
-/// tests 
 
 #[cfg(test)]
 mod tests {
