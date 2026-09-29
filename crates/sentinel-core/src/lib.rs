@@ -5,3 +5,4 @@
 pub mod alert;
 pub mod telemetry;
 pub mod health;
+pub mod crc;
