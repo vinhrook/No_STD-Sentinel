@@ -1,6 +1,23 @@
 [package]
 name = "sentinel-firmware"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 
 [dependencies]
+sentinel-core = { path = "../sentinel-core" }
+
+embassy-executor = { version = "0.7", features = ["nightly"] }
+embassy-time = "0.4"
+embassy-sync = "0.7"
+
+esp-hal       = { version = "0.23", features = ["esp32s3"] }
+esp-wifi      = { version = "0.13", features = ["esp32s3", "wifi", "tcp"] }
+esp-println   = { version = "0.13", features = ["esp32s3", "uart"] }
+esp-backtrace = { version = "0.15", features = ["esp32s3", "panic-handler", "println"] }
+
+critical-section = "1.2"
+
+healpless = "0.8"
+
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["alloc"] }
