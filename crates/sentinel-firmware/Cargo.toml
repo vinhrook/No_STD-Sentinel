@@ -5,19 +5,17 @@ edition.workspace = true
 
 [dependencies]
 sentinel-core = { path = "../sentinel-core" }
+heapless = "0.8"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["alloc"] }
+critical-section = "1.2"
 
+# Only build ESP hardware crates when targeting the actual microcontroller
+[target.'cfg(target_arch = "xtensa")'.dependencies]
+esp-hal       = { version = "0.23", features = ["esp32s3"] }
+esp-wifi      = { version = "0.12", features = ["esp32s3", "wifi"] }
+esp-println   = { version = "0.13", default-features = false, features = ["esp32s3", "uart"] }
+esp-backtrace = { version = "0.15", features = ["esp32s3", "panic-handler", "println"] }
 embassy-executor = { version = "0.7", features = ["nightly"] }
 embassy-time = "0.4"
 embassy-sync = "0.7"
-
-esp-hal       = { version = "0.23", features = ["esp32s3"] }
-esp-wifi      = { version = "0.12", features = ["esp32s3", "wifi"] }
-esp-println   = { version = "0.13", features = ["esp32s3", "uart"] }
-esp-backtrace = { version = "0.15", features = ["esp32s3", "panic-handler", "println"] }
-
-critical-section = "1.2"
-
-heapless = "0.8"
-
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true, features = ["alloc"] }

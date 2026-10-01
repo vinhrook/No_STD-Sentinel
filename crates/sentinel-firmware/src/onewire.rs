@@ -1,5 +1,7 @@
 //! High-Precision 1-Wire Protocol Driver (`#![no_std]`)
+#[cfg(target_arch = "xtensa")]
 use esp_hal::delay::Delay;
+#[cfg(target_arch = "xtensa")]
 use esp_hal::gpio::{Flex, Pull};
 
 // 1. Centralized calibration constants (zero runtime cost)
@@ -21,11 +23,13 @@ pub enum OneWireError {
     CrcMismatch,
 }
 
+#[cfg(target_arch = "xtensa")]
 pub struct OneWire<'d> {
     pin: Flex<'d>,
     delay: Delay,
 }
 
+#[cfg(target_arch = "xtensa")]
 impl<'d> OneWire<'d> {
     pub fn new(mut pin: Flex<'d>, delay: Delay) -> Self {
         pin.set_as_input(Pull::Up);
@@ -141,5 +145,56 @@ pub fn check_crc(buf: &[u8]) -> Result<(), OneWireError> {
     match buf.split_last() {
         Some((&crc, data)) if crc8(data) == crc => Ok(()),
         _ => Err(OneWireError::CrcMismatch),
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[allow(dead_code)]
+    struct Mock1WireBus {
+        time_us: u32,
+        master_output: bool,
+        slave_pulling_low: bool,
+    }
+
+    impl Mock1WireBus {
+        fn is_pin_low(&self) -> bool {
+            !self.master_output || self.slave_pulling_low
+        }
+        
+        // Simulate DS18B20: When master releases after reset low (480µs),
+        // wait 30µs, then slave pulls low for 100µs (presence pulse)
+        fn advance_time(&mut self, us: u32) {
+            self.time_us += us;
+            if self.time_us >= 510 && self.time_us <= 610 {
+                self.slave_pulling_low = true;
+            } else {
+                self.slave_pulling_low = false;
+            }
+        }
+    }
+
+    #[test]
+    fn test_valid_ds18b20_rom_crc() {
+        let rom = [0x28, 0x5E, 0x48, 0x56, 0x05, 0x00, 0x00, 0x10];
+        assert_eq!(crc8(&rom[..7]), 0x10);
+        assert!(check_crc(&rom).is_ok());
+    }
+
+    #[test]
+    fn test_corrupted_crc() {
+        let corrupted_rom = [0x28, 0x5E, 0x48, 0x56, 0x05, 0x00, 0x00, 0xFF];
+        assert_eq!(check_crc(&corrupted_rom), Err(OneWireError::CrcMismatch));
+    }
+
+    #[test]
+    fn test_ds18b20_scratchpad_golden_power_on_crc() {
+        // Official Maxim DS18B20 Power-On Reset (+85°C) factory scratchpad
+        let scratchpad = [0x50, 0x05, 0x4B, 0x46, 0x7F, 0xFF, 0x0C, 0x10, 0x1C];
+        assert_eq!(crc8(&scratchpad[..8]), 0x1C);
+        assert!(check_crc(&scratchpad).is_ok());
     }
 }
