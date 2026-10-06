@@ -7,5 +7,5 @@ runner = "espflash flash --monitor"
 [env]
 ESP_LOG = "info"
 
-[unstable]
-build_std = ["core", "alloc"]
+# [unstable]
+# build-std = ["core", "alloc"]
