@@ -1,6 +1,41 @@
 [package]
 name = "sentinel-gateway"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "sentinel-gateway"
+path = "src/main.rs"
 
 [dependencies]
+sentinel-core = { path = "../sentinel-core", features = ["std"] }
+
+# Async runtime
+tokio = { version = "1.43", features = ["full"] }
+
+# HTTP framework
+axum = { version = "0.8", features = ["ws", "json"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# MQTT client
+rumqttc = { version = "0.24", features = ["use-rustls"] }
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Serialization
+serde = { workspace = true, features = ["std", "derive"] }
+serde_json = { workspace = true, features = ["std"] }
+
+# Configuration
+toml = "0.8"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# HTTP client for webhook alerts
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
