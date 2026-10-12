@@ -1,5 +1,6 @@
 # SENTINEL
-
+video Demo -- [https://docs.google.com/videos/d/1K8gYh-r3H8_DHYh_fEL8CJjSsK-Fb0eCDpuSWvJYJs4/play?usp=sharing]
+              [https://drive.google.com/file/d/1QL-C7vTZI7Q3pThRS9zRMNnGYMYYY3WD/view?usp=sharing]
 **Industrial Cold-Chain Cryo-Telemetry & Predictive Safety Platform**
 
 [![Rust Version](https://img.shields.io/badge/rust-1.80%2B-orange?logo=rust)](https://www.rust-lang.org/)
