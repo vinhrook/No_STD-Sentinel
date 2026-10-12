@@ -1,0 +1,19 @@
+# SENTINEL Gateway Runtime Configuration
+
+bind_addr = "0.0.0.0:8080"
+db_path   = "/data/sentinel.db"
+
+[mqtt]
+host         = "mosquitto"
+port         = 1883
+client_id    = "sentinel-gateway-01"
+topic_filter = "sentinel/+/telemetry"
+
+[alerts]
+whatsapp_enabled = false
+whatsapp_phone   = ""
+whatsapp_api_key = ""
+
+telegram_enabled   = false
+telegram_bot_token = ""
+telegram_chat_id   = ""

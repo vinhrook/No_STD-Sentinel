@@ -10,17 +10,24 @@ use {
     esp_println::println,
 };
 
-use crate::onewire::OneWireError;
+#[allow(unused_imports)]
+use crate::onewire::{
+    OneWireError, RomAddress, CMD_MATCH_ROM, CMD_READ_ROM, CMD_SEARCH_ROM, CMD_SKIP_ROM,
+};
 use sentinel_core::crc;
 
-#[allow(dead_code)]
-const CMD_SKIP_ROM: u8 = 0xCC;
 #[allow(dead_code)]
 const CMD_CONVERT_T: u8 = 0x44;
 #[allow(dead_code)]
 const CMD_READ_SCRATCHPAD: u8 = 0xBE;
 
 const POWER_ON_DEFAULT_RAW: u16 = 0x0550;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DualSensorReading {
+    pub internal: Result<CentiCelsius, Ds18b20Error>,
+    pub ambient: Option<Result<CentiCelsius, Ds18b20Error>>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct CentiCelsius(pub i16);
@@ -84,20 +91,16 @@ impl From<OneWireError> for Ds18b20Error {
     }
 }
 
-/// Validates and parses a raw 9-byte DS18B20 scratchpad into a verified [`CentiCelsius`] reading.
 pub fn parse_scratchpad(scratchpad: &[u8; 9]) -> Result<CentiCelsius, Ds18b20Error> {
-    // 1. Verify CRC-8 using `sentinel_core::crc`
     if !crc::validate_ds18b20_scratchpad(scratchpad) {
         return Err(Ds18b20Error::CrcCorrupted);
     }
 
-    // 2. Detect uncalibrated power-on default state (+85.0°C)
     let raw_temp = u16::from_le_bytes([scratchpad[0], scratchpad[1]]);
     if raw_temp == POWER_ON_DEFAULT_RAW {
         return Err(Ds18b20Error::PowerOnResetState);
     }
 
-    // 3. Extract and convert to centi-celsius using `sentinel_core::crc`
     let centi = crc::parse_ds18b20_temp(scratchpad).ok_or(Ds18b20Error::DecodeFailed)?;
     Ok(CentiCelsius(centi))
 }
@@ -115,7 +118,6 @@ pub async fn read_temperature_async(
                 println!("[DS18B20] Attempt {attempt}/{max_retries} failed: {err}");
                 last_error = err;
                 if attempt < max_retries {
-                    // Recover bus and back off before next attempt
                     let mut bus = OneWire::new(pin, Delay::new());
                     let _ = bus.recover();
                     Timer::after(Duration::from_millis(100)).await;
@@ -128,39 +130,208 @@ pub async fn read_temperature_async(
 
 #[cfg(target_arch = "xtensa")]
 async fn execute_conversion_cycle(pin: &mut Flex<'_>) -> Result<CentiCelsius, Ds18b20Error> {
-    // Phase 1: Initiate Conversion
     {
         let mut bus = OneWire::new(pin, Delay::new());
-        // 1. Reset bus & verify sensor presence
-        let presence = bus.reset().map_err(Ds18b20Error::BusFault)?;
-        if !presence {
-            return Err(Ds18b20Error::PresenceFailed);
+        match bus.reset() {
+            Ok(()) => {}
+            Err(OneWireError::NoDevice) => return Err(Ds18b20Error::PresenceFailed),
+            Err(err) => return Err(Ds18b20Error::BusFault(err)),
         }
-        // 2. Issue Skip ROM (0xCC) -> Convert T (0x44)
         bus.write_byte(CMD_SKIP_ROM);
         bus.write_byte(CMD_CONVERT_T);
     }
 
-    // 3. Asynchronously yield for 750 ms (12-bit conversion). CPU is 100% free!
     Timer::after(Duration::from_millis(750)).await;
     let mut scratchpad = [0u8; 9];
     {
         let mut bus = OneWire::new(pin, Delay::new());
 
-        // 4. Second reset pulse to ready the sensor for readout
-        let presence = bus.reset().map_err(Ds18b20Error::BusFault)?;
-        if !presence {
-            return Err(Ds18b20Error::DisconnectedDuringConversion);
+        match bus.reset() {
+            Ok(()) => {}
+            Err(OneWireError::NoDevice) => return Err(Ds18b20Error::DisconnectedDuringConversion),
+            Err(err) => return Err(Ds18b20Error::BusFault(err)),
         }
 
-        // 5. Issue Skip ROM (0xCC) -> Read Scratchpad (0xBE)
         bus.write_byte(CMD_SKIP_ROM);
         bus.write_byte(CMD_READ_SCRATCHPAD);
-        // 6. Read 9 scratchpad bytes (8 data + 1 CRC-8)
         bus.read_bytes(&mut scratchpad);
     }
 
-    parse_scratchpad(&scratchpad)
+    match parse_scratchpad(&scratchpad) {
+        Ok(temp) => Ok(temp),
+        Err(e) => {
+            println!("[DS18B20] Scratchpad bytes read: {:02X?}", scratchpad);
+            Err(e)
+        }
+    }
+}
+
+#[cfg(target_arch = "xtensa")]
+pub fn trigger_broadcast_conversion(pin: &mut Flex<'_>) -> Result<(), Ds18b20Error> {
+    let mut bus = OneWire::new(pin, Delay::new());
+    match bus.reset() {
+        Ok(()) => {}
+        Err(OneWireError::NoDevice) => return Err(Ds18b20Error::PresenceFailed),
+        Err(err) => return Err(Ds18b20Error::BusFault(err)),
+    }
+    bus.write_byte(CMD_SKIP_ROM);
+    bus.write_byte(CMD_CONVERT_T);
+    Ok(())
+}
+
+#[cfg(target_arch = "xtensa")]
+pub fn read_scratchpad_by_rom(
+    pin: &mut Flex<'_>,
+    rom: &RomAddress,
+) -> Result<CentiCelsius, Ds18b20Error> {
+    let mut last_err = Ds18b20Error::PresenceFailed;
+    for attempt in 0..3 {
+        if attempt > 0 {
+            let mut bus = OneWire::new(pin, Delay::new());
+            let _ = bus.recover();
+        }
+        let mut scratchpad = [0u8; 9];
+        {
+            let mut bus = OneWire::new(pin, Delay::new());
+            match bus.reset() {
+                Ok(()) => {}
+                Err(OneWireError::NoDevice) => {
+                    last_err = Ds18b20Error::DisconnectedDuringConversion;
+                    continue;
+                }
+                Err(err) => {
+                    last_err = Ds18b20Error::BusFault(err);
+                    continue;
+                }
+            }
+            bus.write_byte(CMD_MATCH_ROM);
+            bus.write_bytes(rom);
+            bus.write_byte(CMD_READ_SCRATCHPAD);
+            bus.read_bytes(&mut scratchpad);
+        }
+        match parse_scratchpad(&scratchpad) {
+            Ok(temp) => return Ok(temp),
+            Err(e) => {
+                last_err = e;
+            }
+        }
+    }
+    Err(last_err)
+}
+
+pub const DEFAULT_HARDWARE_ROMS: [RomAddress; 2] = [
+    [0x28, 0xCA, 0x4A, 0x23, 0x00, 0x00, 0x00, 0xE2],
+    [0x28, 0xA1, 0x18, 0x23, 0x00, 0x00, 0x00, 0xCF],
+];
+
+#[cfg(target_arch = "xtensa")]
+pub async fn read_dual_temperatures_async(
+    pin: &mut Flex<'_>,
+    roms: &[RomAddress],
+    max_retries: u8,
+) -> DualSensorReading {
+    let effective_roms: &[RomAddress] = if roms.is_empty() {
+        &DEFAULT_HARDWARE_ROMS
+    } else {
+        roms
+    };
+
+    if effective_roms.len() == 1 {
+        let single = read_single_by_rom_async(pin, &effective_roms[0], max_retries).await;
+        return DualSensorReading {
+            internal: single,
+            ambient: None,
+        };
+    }
+
+    let mut best_internal = Err(Ds18b20Error::PresenceFailed);
+    let mut best_ambient = Err(Ds18b20Error::PresenceFailed);
+
+    for attempt in 1..=max_retries {
+        if let Err(e) = trigger_broadcast_conversion(pin) {
+            println!("[DS18B20] Attempt {attempt}/{max_retries} broadcast conversion failed: {e}");
+            if best_internal.is_err() {
+                best_internal = Err(e);
+            }
+            let mut bus = OneWire::new(pin, Delay::new());
+            let _ = bus.recover();
+            Timer::after(Duration::from_millis(100)).await;
+            continue;
+        }
+
+        Timer::after(Duration::from_millis(750)).await;
+
+        let r0 = read_scratchpad_by_rom(pin, &effective_roms[0]);
+        Timer::after(Duration::from_millis(10)).await;
+        let r1 = read_scratchpad_by_rom(pin, &effective_roms[1]);
+
+        if r0.is_ok() {
+            best_internal = r0;
+        } else if best_internal.is_err() {
+            best_internal = r0;
+        }
+
+        if r1.is_ok() {
+            best_ambient = r1;
+        } else if best_ambient.is_err() {
+            best_ambient = r1;
+        }
+
+        if best_internal.is_ok() || best_ambient.is_ok() {
+            return DualSensorReading {
+                internal: best_internal,
+                ambient: Some(best_ambient),
+            };
+        } else {
+            if attempt == max_retries {
+                println!(
+                    "[DS18B20] Bus readout failed on attempt {attempt}/{max_retries}: S0={:?}, S1={:?}",
+                    best_internal, best_ambient
+                );
+            }
+            if attempt < max_retries {
+                let mut bus = OneWire::new(pin, Delay::new());
+                let _ = bus.recover();
+                Timer::after(Duration::from_millis(50)).await;
+            }
+        }
+    }
+
+    DualSensorReading {
+        internal: best_internal,
+        ambient: Some(best_ambient),
+    }
+}
+
+#[cfg(target_arch = "xtensa")]
+async fn read_single_by_rom_async(
+    pin: &mut Flex<'_>,
+    rom: &RomAddress,
+    max_retries: u8,
+) -> Result<CentiCelsius, Ds18b20Error> {
+    let mut last_error = Ds18b20Error::PresenceFailed;
+    for attempt in 1..=max_retries {
+        if let Err(e) = trigger_broadcast_conversion(pin) {
+            last_error = e;
+            let mut bus = OneWire::new(pin, Delay::new());
+            let _ = bus.recover();
+            Timer::after(Duration::from_millis(100)).await;
+            continue;
+        }
+        Timer::after(Duration::from_millis(750)).await;
+        match read_scratchpad_by_rom(pin, rom) {
+            Ok(temp) => return Ok(temp),
+            Err(e) => {
+                last_error = e;
+                if attempt < max_retries {
+                    let mut bus = OneWire::new(pin, Delay::new());
+                    let _ = bus.recover();
+                    Timer::after(Duration::from_millis(100)).await;
+                }
+            }
+        }
+    }
+    Err(last_error)
 }
 
 #[cfg(test)]
@@ -186,7 +357,6 @@ mod tests {
 
     #[test]
     fn test_centicelsius_display_formatting() {
-        // Cold chain freezer test vectors
         assert_eq!(alloc::format!("{}", CentiCelsius(2450)), "24.50 °C");
         assert_eq!(alloc::format!("{}", CentiCelsius(-2000)), "-20.00 °C");
         assert_eq!(alloc::format!("{}", CentiCelsius(-50)), "-0.50 °C");
@@ -197,29 +367,24 @@ mod tests {
 
     #[test]
     fn test_parse_scratchpad_valid_temperature() {
-        // Realistic DS18B20 12-bit reading of +25.0625°C:
-        // Raw = 25.0625 * 16 = 401 = 0x0191 -> [0x91, 0x01]
         let mut scratchpad = [0x91, 0x01, 0x4B, 0x46, 0x7F, 0xFF, 0x0C, 0x10, 0x00];
         scratchpad[8] = crc::crc8_maxim(&scratchpad[..8]);
 
         let result = parse_scratchpad(&scratchpad).expect("valid scratchpad should parse");
-        assert_eq!(result.raw(), 2506); // 25.06 °C in centi-celsius
+        assert_eq!(result.raw(), 2506);
     }
 
     #[test]
     fn test_parse_scratchpad_subzero_temperature() {
-        // -10.125°C reading:
-        // Raw = -10.125 * 16 = -162 = 0xFF5E -> [0x5E, 0xFF]
         let mut scratchpad = [0x5E, 0xFF, 0x4B, 0x46, 0x7F, 0xFF, 0x0C, 0x10, 0x00];
         scratchpad[8] = crc::crc8_maxim(&scratchpad[..8]);
 
         let result = parse_scratchpad(&scratchpad).expect("subzero scratchpad should parse");
-        assert_eq!(result.raw(), -1012); // -10.12 °C in centi-celsius
+        assert_eq!(result.raw(), -1012);
     }
 
     #[test]
     fn test_parse_scratchpad_power_on_reset_rejected() {
-        // Factory Maxim default uncalibrated state (+85.0°C)
         let scratchpad = [0x50, 0x05, 0x4B, 0x46, 0x7F, 0xFF, 0x0C, 0x10, 0x1C];
         let err = parse_scratchpad(&scratchpad).unwrap_err();
         assert_eq!(err, Ds18b20Error::PowerOnResetState);
@@ -234,14 +399,12 @@ mod tests {
 
     #[test]
     fn test_parse_scratchpad_bus_fault_states() {
-        // Bus floating high
         let floating = [0xFF; 9];
         assert_eq!(
             parse_scratchpad(&floating).unwrap_err(),
             Ds18b20Error::CrcCorrupted
         );
 
-        // Bus grounded
         let grounded = [0x00; 9];
         assert_eq!(
             parse_scratchpad(&grounded).unwrap_err(),

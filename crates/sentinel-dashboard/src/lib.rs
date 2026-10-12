@@ -1,14 +1,13 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+pub mod app;
+pub mod components;
+pub mod state;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub use app::App;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen(start)]
+pub fn main() {
+    console_error_panic_hook::set_once();
+    leptos::mount::mount_to_body(App);
 }

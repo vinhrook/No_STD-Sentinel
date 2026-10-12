@@ -12,10 +12,11 @@ sentinel-core = { path = "../sentinel-core", features = ["std"] }
 
 # Async runtime
 tokio = { version = "1.43", features = ["full"] }
+futures-util = "0.3"
 
 # HTTP framework
 axum = { version = "0.8", features = ["ws", "json"] }
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
 
 # MQTT client
 rumqttc = { version = "0.24", features = ["use-rustls"] }

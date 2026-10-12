@@ -1,0 +1,91 @@
+# syntax=docker/dockerfile:1.7
+
+# ==============================================================================
+# Stage 1: Cargo Chef Planner
+# ==============================================================================
+FROM lukemathwalker/cargo-chef:latest-rust-1.85-bookworm AS planner
+WORKDIR /app
+
+# Copy dependency manifest definitions
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+
+# Analyze and generate dependency build recipe
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ==============================================================================
+# Stage 2: Dependency Cacher
+# ==============================================================================
+FROM lukemathwalker/cargo-chef:latest-rust-1.85-bookworm AS cacher
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=planner /app/recipe.json recipe.json
+
+# Pre-cook ONLY dependencies required by the gateway service
+RUN cargo chef cook --release --recipe-path recipe.json \
+    --package sentinel-gateway \
+    --bin sentinel-gateway
+
+# ==============================================================================
+# Stage 3: Binary Builder
+# ==============================================================================
+FROM rust:1.85-bookworm AS builder
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    binutils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Reuse cached cargo artifacts
+COPY --from=cacher /app/target target
+COPY --from=cacher /usr/local/cargo /usr/local/cargo
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+
+# Compile optimized release binary
+ENV RUSTFLAGS="-C target-cpu=generic"
+RUN cargo build --release --package sentinel-gateway --bin sentinel-gateway
+
+# Strip debug symbols to reduce binary size (<20MB)
+RUN strip --strip-all /app/target/release/sentinel-gateway
+
+# ==============================================================================
+# Stage 4: Hardened Unprivileged Runtime
+# ==============================================================================
+FROM debian:bookworm-slim AS runtime
+
+# Install CA roots for Telegram/WhatsApp webhooks and wget for healthchecks
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create dedicated non-root application user and persistent data dir
+RUN groupadd -g 10001 sentinel && \
+    useradd -u 10001 -g sentinel -s /usr/sbin/nologin -M sentinel && \
+    mkdir -p /app /data && \
+    chown -R sentinel:sentinel /app /data
+
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder --chown=sentinel:sentinel /app/target/release/sentinel-gateway /app/sentinel-gateway
+
+# Switch to unprivileged execution
+USER sentinel:sentinel
+
+# Expose Axum HTTP & WebSocket port
+EXPOSE 8080
+
+# Environment defaults
+ENV RUST_LOG=info \
+    SENTINEL_DB_PATH=/data/sentinel.db
+
+ENTRYPOINT ["/app/sentinel-gateway"]

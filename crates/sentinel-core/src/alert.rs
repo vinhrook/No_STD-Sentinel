@@ -2,9 +2,8 @@
 
 use core::fmt;
 use serde::{Deserialize, Serialize};
-use crate::telemetry::{FreezerReading, TempCentiC};
+use crate::telemetry::FreezerReading;
 
-/// Alert Severity levels (`Healthy < Warning < Critical`)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum Severity {
@@ -25,7 +24,6 @@ impl fmt::Display for Severity {
     }
 }
 
-/// Root cause triggering an alert transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum AlertCause {
@@ -59,7 +57,6 @@ impl fmt::Display for ThresholdError {
 }
 impl core::error::Error for ThresholdError {}
 
-/// Configuration thresholds for the alert engine (in centi-celsius and seconds).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Thresholds {
     pub warn_trigger_cc: i16,
@@ -118,7 +115,6 @@ impl Default for Thresholds {
     }
 }
 
-/// An Alert event generated when severity escalates.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AlertEvent {
     pub timestamp_secs: u64,
@@ -147,7 +143,6 @@ impl AlertEvent {
     }
 }
 
-/// Stateful alert evaluator with hysteresis and root-cause tracking.
 #[derive(Debug, Clone)]
 pub struct AlertEngine {
     thresholds: Thresholds,
@@ -280,6 +275,7 @@ impl AlertEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::telemetry::TempCentiC;
 
     fn reading_at(temp_cc: i16, door: bool, door_secs: u16) -> FreezerReading {
         FreezerReading {
@@ -294,12 +290,9 @@ mod tests {
     fn door_alert_clears_instantly_on_close_even_if_temp_is_not_below_clear_threshold() {
         let mut engine = AlertEngine::new(Thresholds::home_freezer());
 
-        // Freezer at -16°C (Healthy: below -15°C trigger, but above -17°C clear)
-        // Door open for 120s triggers Warning
         assert_eq!(engine.evaluate(&reading_at(-1600, true, 120)), Severity::Warning);
         assert_eq!(engine.active_cause(), Some(AlertCause::DoorAjarTimeout));
 
-        // Close door -> MUST return to Healthy immediately!
         assert_eq!(engine.evaluate(&reading_at(-1600, false, 0)), Severity::Healthy);
         assert_eq!(engine.active_cause(), None);
     }
@@ -308,12 +301,10 @@ mod tests {
     fn warning_upgrades_to_compound_when_door_subsequently_opens() {
         let mut engine = AlertEngine::new(Thresholds::home_freezer());
 
-        // 1. Temp warning triggers
         let r1 = reading_at(-1400, false, 0);
         assert!(engine.process(&r1).is_some());
         assert_eq!(engine.active_cause(), Some(AlertCause::TemperatureBreach));
 
-        // 2. Door also stays open for 120s -> MUST re-alert as Compound!
         let r2 = reading_at(-1400, true, 120);
         let alert = engine.process(&r2).expect("Must re-alert on compound breach");
         assert_eq!(alert.cause, AlertCause::CompoundBreach);

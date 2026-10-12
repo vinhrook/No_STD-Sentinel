@@ -1,0 +1,97 @@
+# SENTINEL Industrial Gateway & Broker Orchestration
+# Specification: Modern Docker Compose v2 Specification
+
+services:
+  # ============================================================================
+  # MQTT Broker (Eclipse Mosquitto)
+  # ============================================================================
+  mosquitto:
+    image: eclipse-mosquitto:2.0-openssl
+    container_name: sentinel-mosquitto
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      # Expose 1883 to host for ESP32-S3 wireless nodes
+      - "1883:1883"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto_data:/mosquitto/data
+    networks:
+      - sentinel_net
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -t '$$SYS/broker/version' -C 1 -W 2 || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 3s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ============================================================================
+  # Sentinel Rust Gateway Engine (Axum + SQLite WAL + Ingestion)
+  # ============================================================================
+  gateway:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.gateway
+    container_name: sentinel-gateway
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    ports:
+      # REST API & Real-Time WebSocket stream
+      - "8080:8080"
+    volumes:
+      - sentinel_db:/data
+      - ./gateway.toml:/app/gateway.toml:ro
+    environment:
+      - RUST_LOG=info,sentinel_gateway=debug
+      - RUST_BACKTRACE=1
+      - SENTINEL_DB_PATH=/data/sentinel.db
+      - SENTINEL_MQTT_HOST=mosquitto
+      - SENTINEL_MQTT_PORT=1883
+    networks:
+      - sentinel_net
+    healthcheck:
+      # Native liveness probe using our axum /healthz endpoint
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 128M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# ============================================================================
+# Persistent Storage Volumes & Private Network
+# ============================================================================
+volumes:
+  sentinel_db:
+    name: sentinel_sqlite_wal
+  mosquitto_data:
+    name: sentinel_mosquitto_data
+
+networks:
+  sentinel_net:
+    name: sentinel_internal_mesh
+    driver: bridge

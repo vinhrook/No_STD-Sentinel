@@ -2,3 +2,17 @@
 **/*.rs.bk
 *.swp
 .DS_Store
+
+# Frontend build artifacts
+crates/sentinel-dashboard/dist/
+dist/
+
+# SQLite runtime databases
+*.db
+*.db-wal
+*.db-shm
+
+# Scratch / build logs
+check_gateway.txt
+usb.txt
+*.bin

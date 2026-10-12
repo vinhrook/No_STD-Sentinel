@@ -1,76 +1,290 @@
-use core::fmt::Write;
+use core::fmt::Write as FmtWrite;
 
 #[cfg(target_arch = "xtensa")]
 use {
-    crate::TELEMETRY_CHANNEL,
+    crate::{config, MqttPayload, TELEMETRY_CHANNEL},
     embassy_executor::task,
+    embassy_net::{tcp::TcpSocket, IpAddress, Stack},
     esp_println::println,
 };
 
 use heapless::String;
 use sentinel_core::telemetry::{topics, DeviceId, FreezerReading};
 
-/// Static buffer size for single wire frames.
 pub const JSON_BUFFER_CAPACITY: usize = 256;
 
-/// Fallback topic when UTF-8 decoding fails on anomalous hardware buffers.
 pub const FALLBACK_TOPIC: &str = "sentinel/unknown/telemetry";
 
-/// Formats the MQTT destination topic for a given [`DeviceId`].
-///
-/// Guaranteed zero-heap, constant-time, and bounds-safe.
+pub const MQTT_CONNECT_PACKET: [u8; 28] = [
+    0x10, 0x1A,
+    0x00, 0x04, b'M', b'Q', b'T', b'T',
+    0x04,
+    0x02,
+    0x00, 0x3C,
+    0x00, 0x0E,
+    b's', b'e', b'n', b't', b'i', b'n', b'e', b'l', b'-', b'e', b's', b'p', b'3', b'2',
+];
+
+pub fn encode_publish_frame(topic: &str, payload: &str, out: &mut [u8]) -> Option<usize> {
+    let rem_len = 2 + topic.len() + payload.len();
+    let rem_len_bytes = if rem_len < 128 { 1 } else { 2 };
+    let total_len = 1 + rem_len_bytes + 2 + topic.len() + payload.len();
+
+    if out.len() < total_len {
+        return None;
+    }
+
+    let mut idx = 0;
+    out[idx] = 0x30;
+    idx += 1;
+
+    if rem_len < 128 {
+        out[idx] = rem_len as u8;
+        idx += 1;
+    } else {
+        out[idx] = ((rem_len & 0x7F) as u8) | 0x80;
+        idx += 1;
+        out[idx] = (rem_len >> 7) as u8;
+        idx += 1;
+    }
+
+    let topic_len = topic.len() as u16;
+    out[idx] = (topic_len >> 8) as u8;
+    idx += 1;
+    out[idx] = (topic_len & 0xFF) as u8;
+    idx += 1;
+
+    out[idx..idx + topic.len()].copy_from_slice(topic.as_bytes());
+    idx += topic.len();
+
+    out[idx..idx + payload.len()].copy_from_slice(payload.as_bytes());
+    idx += payload.len();
+
+    Some(idx)
+}
+
+pub const LOG_PREFIX: &[u8; 9] = b"sentinel/";
+pub const LOG_SUFFIX: &[u8; 5] = b"/logs";
+pub const LOG_TOPIC_LEN: usize = LOG_PREFIX.len() + 8 + LOG_SUFFIX.len();
+
 #[inline]
 pub const fn topic_for_device(device_id: DeviceId) -> [u8; topics::LEN] {
     topics::telemetry(device_id)
 }
 
-/// Resolves a topic string from a byte slice, stripping trailing NUL terminators
-/// and falling back to a safe topic if UTF-8 decoding fails.
+#[inline]
+pub fn topic_for_log(device_id: DeviceId) -> [u8; LOG_TOPIC_LEN] {
+    let hex = device_id.as_hex();
+    let mut buf = [0u8; LOG_TOPIC_LEN];
+    let mut i = 0;
+    while i < LOG_PREFIX.len() {
+        buf[i] = LOG_PREFIX[i];
+        i += 1;
+    }
+    let mut j = 0;
+    while j < 8 {
+        buf[LOG_PREFIX.len() + j] = hex[j];
+        j += 1;
+    }
+    let mut k = 0;
+    while k < LOG_SUFFIX.len() {
+        buf[LOG_PREFIX.len() + 8 + k] = LOG_SUFFIX[k];
+        k += 1;
+    }
+    buf
+}
+
 #[inline]
 pub fn resolve_topic_str(raw: &[u8]) -> &str {
     let len = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
     core::str::from_utf8(&raw[..len]).unwrap_or(FALLBACK_TOPIC)
 }
 
-/// Serializes a [`FreezerReading`] into a zero-allocation compact JSON wire payload.
-///
-/// Returns `None` if the formatted payload exceeds [`JSON_BUFFER_CAPACITY`].
 #[inline]
 pub fn serialize_compact_json(r: &FreezerReading) -> Option<String<JSON_BUFFER_CAPACITY>> {
+    serialize_compact_json_dual(r, None)
+}
+
+#[inline]
+pub fn serialize_compact_json_dual(
+    r: &FreezerReading,
+    ambient_cc: Option<i16>,
+) -> Option<String<JSON_BUFFER_CAPACITY>> {
     let mut buffer = String::new();
-    write!(
-        buffer,
-        r#"{{"d":{},"ts":{},"tc":{},"do":{},"ds":{},"hs":{},"rs":{},"fv":{}}}"#,
-        r.device_id.as_u32(),
-        r.timestamp_secs,
-        r.temp.as_centi(),
-        r.door_open,
-        r.door_open_secs,
-        r.health_score.as_u16(),
-        r.rssi_dbm,
-        r.firmware_version.as_u32(),
-    )
-    .ok()?;
+    if let Some(amb) = ambient_cc {
+        write!(
+            buffer,
+            r#"{{"d":{},"ts":{},"tc":{},"ac":{},"do":{},"ds":{},"hs":{},"rs":{},"fv":{}}}"#,
+            r.device_id.as_u32(),
+            r.timestamp_secs,
+            r.temp.as_centi(),
+            amb,
+            r.door_open,
+            r.door_open_secs,
+            r.health_score.as_u16(),
+            r.rssi_dbm,
+            r.firmware_version.as_u32(),
+        )
+        .ok()?;
+    } else {
+        write!(
+            buffer,
+            r#"{{"d":{},"ts":{},"tc":{},"do":{},"ds":{},"hs":{},"rs":{},"fv":{}}}"#,
+            r.device_id.as_u32(),
+            r.timestamp_secs,
+            r.temp.as_centi(),
+            r.door_open,
+            r.door_open_secs,
+            r.health_score.as_u16(),
+            r.rssi_dbm,
+            r.firmware_version.as_u32(),
+        )
+        .ok()?;
+    }
     Some(buffer)
 }
 
 #[cfg(target_arch = "xtensa")]
 #[task]
-pub async fn mqtt_publish_task() {
-    println!("[MQTT] Publisher pipeline online. Listening on telemetry channel...");
+pub async fn mqtt_publish_task(stack: Stack<'static>) {
+    println!("[MQTT] Publisher pipeline online. Waiting for network link...");
+
+    while !stack.is_link_up() || stack.config_v4().is_none() {
+        embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
+    }
+    println!("[MQTT] Network link ready. Starting broker connection loop...");
+    if let Some(cfg) = stack.config_v4() {
+        let octets = cfg.address.address().octets();
+        println!("[NET]  🌐 Assigned DHCP IPv4: {}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3]);
+        let base_mac = esp_hal::efuse::Efuse::read_base_mac_address();
+        let device_id = DeviceId::from_mac_tail(base_mac);
+        let mut msg = heapless::String::<128>::new();
+        let _ = core::fmt::write(
+            &mut msg,
+            format_args!(
+                "[NET] IP: {}.{}.{}.{} | Wireless OTA Port: 8032 ready",
+                octets[0], octets[1], octets[2], octets[3]
+            ),
+        );
+        let _ = TELEMETRY_CHANNEL.try_send(MqttPayload::Log {
+            device_id,
+            message: msg,
+        });
+    }
+
+    let broker_endpoint = (
+        IpAddress::v4(
+            config::BROKER_IP[0],
+            config::BROKER_IP[1],
+            config::BROKER_IP[2],
+            config::BROKER_IP[3],
+        ),
+        config::BROKER_PORT,
+    );
+
     loop {
-        // 1. Await next reading from the sensor sampling task
-        let reading = TELEMETRY_CHANNEL.receive().await;
-        // 2. Resolve destination topic (bounds-safe C-string slice decoding)
-        let topic_bytes = topic_for_device(reading.device_id);
-        let topic = resolve_topic_str(&topic_bytes);
-        // 3. Serialize to zero-heap, compact JSON wire payload
-        match serialize_compact_json(&reading) {
-            Some(payload) => {
-                println!("[MQTT] Publish -> {topic}\n    {payload}");
+        let mut rx_buf = [0u8; 512];
+        let mut tx_buf = [0u8; 512];
+        let mut socket = TcpSocket::new(stack, &mut rx_buf, &mut tx_buf);
+        socket.set_timeout(Some(embassy_time::Duration::from_secs(10)));
+
+        println!(
+            "[MQTT] Connecting TCP socket to Mosquitto at {}.{}.{}.{}:{}...",
+            config::BROKER_IP[0],
+            config::BROKER_IP[1],
+            config::BROKER_IP[2],
+            config::BROKER_IP[3],
+            config::BROKER_PORT
+        );
+
+        match socket.connect(broker_endpoint).await {
+            Ok(()) => {
+                println!("[MQTT] TCP connected! Performing MQTT handshake...");
+
+                if let Err(e) = socket.write(&MQTT_CONNECT_PACKET).await {
+                    println!("[MQTT] Failed to send CONNECT packet: {e:?}");
+                    embassy_time::Timer::after(embassy_time::Duration::from_secs(3)).await;
+                    continue;
+                }
+
+                let mut connack = [0u8; 4];
+                match socket.read(&mut connack).await {
+                    Ok(4) if connack[0] == 0x20 && connack[3] == 0x00 => {
+                        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                        println!("  [MQTT] Live connection established to Mosquitto broker!  ");
+                        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                    }
+                    Ok(n) => {
+                        println!(
+                            "[MQTT] Unexpected CONNACK reply ({} bytes): {:02X?}",
+                            n,
+                            &connack[..n]
+                        );
+                        embassy_time::Timer::after(embassy_time::Duration::from_secs(3)).await;
+                        continue;
+                    }
+                    Err(e) => {
+                        println!("[MQTT] Error reading CONNACK: {e:?}");
+                        embassy_time::Timer::after(embassy_time::Duration::from_secs(3)).await;
+                        continue;
+                    }
+                }
+
+                loop {
+                    let packet = TELEMETRY_CHANNEL.receive().await;
+                    match packet {
+                        MqttPayload::Telemetry { reading, ambient_cc } => {
+                            let topic_bytes = topic_for_device(reading.device_id);
+                            let topic = resolve_topic_str(&topic_bytes);
+
+                            match serialize_compact_json_dual(&reading, ambient_cc) {
+                                Some(payload) => {
+                                    let mut wire_buffer = [0u8; 384];
+                                    if let Some(wire_len) =
+                                        encode_publish_frame(topic, payload.as_str(), &mut wire_buffer)
+                                    {
+                                        match socket.write(&wire_buffer[..wire_len]).await {
+                                            Ok(_) => {
+                                                println!(
+                                                    "[MQTT] 🚀 Wire Frame Published -> {} ({}B)",
+                                                    topic, wire_len
+                                                );
+                                            }
+                                            Err(e) => {
+                                                println!(
+                                                    "[MQTT] Transmission failure: {e:?}. Reconnecting..."
+                                                );
+                                                break;
+                                            }
+                                        }
+                                    } else {
+                                        println!("[MQTT] Packet encoder buffer overflow");
+                                    }
+                                }
+                                None => {
+                                    println!("[MQTT] JSON serialization buffer overflow");
+                                }
+                            }
+                        }
+                        MqttPayload::Log { device_id, message } => {
+                            let topic_bytes = topic_for_log(device_id);
+                            let topic = resolve_topic_str(&topic_bytes);
+                            let mut wire_buffer = [0u8; 384];
+                            if let Some(wire_len) =
+                                encode_publish_frame(topic, message.as_str(), &mut wire_buffer)
+                            {
+                                if let Err(e) = socket.write(&wire_buffer[..wire_len]).await {
+                                    println!("[MQTT] Log write failure: {e:?}. Reconnecting...");
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            None => {
-                println!("[MQTT] Buffer overflow: JSON payload exceeded {JSON_BUFFER_CAPACITY}B");
+            Err(e) => {
+                println!("[MQTT] TCP connection failed: {e:?}. Retrying in 5s...");
+                embassy_time::Timer::after(embassy_time::Duration::from_secs(5)).await;
             }
         }
     }
@@ -95,15 +309,12 @@ mod tests {
 
     #[test]
     fn test_resolve_topic_str_nul_handling() {
-        // Topic slice with trailing NULs
         let raw = b"sentinel/00A4F3B2/telemetry\0\0\0extra";
         assert_eq!(resolve_topic_str(raw), "sentinel/00A4F3B2/telemetry");
 
-        // Plain string without NUL
         let plain = b"sentinel/test/telemetry";
         assert_eq!(resolve_topic_str(plain), "sentinel/test/telemetry");
 
-        // Invalid UTF-8 sequence should fall back
         let bad_utf8 = [0xFF, 0xFE, 0xFD, 0x00];
         assert_eq!(resolve_topic_str(&bad_utf8), FALLBACK_TOPIC);
     }
@@ -113,7 +324,7 @@ mod tests {
         let reading = FreezerReading {
             device_id: DeviceId::new(0x1234_5678),
             timestamp_secs: 1_710_000_000,
-            temp: TempCentiC::from_centi(-2000), // -20.00°C
+            temp: TempCentiC::from_centi(-2000),
             door_open: false,
             door_open_secs: 0,
             health_score: HealthScore::new(1000),
@@ -133,7 +344,7 @@ mod tests {
         let reading = FreezerReading {
             device_id: DeviceId::new(0x00A4_F3B2),
             timestamp_secs: 1_710_000_120,
-            temp: TempCentiC::from_centi(450), // +4.50°C (warm breach)
+            temp: TempCentiC::from_centi(450),
             door_open: true,
             door_open_secs: 180,
             health_score: HealthScore::new(350),
@@ -153,7 +364,6 @@ mod tests {
         let reading = FreezerReading::PLACEHOLDER;
         let json_str = serialize_compact_json(&reading).expect("should serialize placeholder");
 
-        // Verify with serde_json parser that the compact output is 100% valid JSON
         let parsed: serde_json::Value =
             serde_json::from_str(json_str.as_str()).expect("output must be valid JSON");
 
@@ -181,7 +391,26 @@ mod tests {
         };
 
         let json = serialize_compact_json(&reading).expect("maximum values should fit in buffer");
-        // Compact JSON should fit comfortably under 256 bytes (usually < 120 bytes even with max values)
         assert!(json.len() < JSON_BUFFER_CAPACITY / 2);
+    }
+
+    #[test]
+    fn test_encode_publish_frame_nominal() {
+        let topic = "sentinel/0A892648/telemetry";
+        let payload = r#"{"d":176760392,"ts":10,"tc":2450}"#;
+        let mut buffer = [0u8; 256];
+        let len = encode_publish_frame(topic, payload, &mut buffer).expect("should encode");
+
+        assert_eq!(buffer[0], 0x30);
+
+        let rem_len = 2 + topic.len() + payload.len();
+        assert_eq!(buffer[1], rem_len as u8);
+
+        let topic_len = ((buffer[2] as usize) << 8) | (buffer[3] as usize);
+        assert_eq!(topic_len, topic.len());
+
+        assert_eq!(&buffer[4..4 + topic.len()], topic.as_bytes());
+
+        assert_eq!(&buffer[4 + topic.len()..len], payload.as_bytes());
     }
 }

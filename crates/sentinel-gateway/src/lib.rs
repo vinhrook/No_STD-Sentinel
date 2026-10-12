@@ -1,14 +1,14 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+use tokio::sync::broadcast;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub mod alerts;
+pub mod api;
+pub mod config;
+pub mod db;
+pub mod mqtt_subscriber;
+pub mod websocket;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
+pub struct AppState {
+    pub db: db::Database,
+    pub live_tx: broadcast::Sender<String>,
+    pub config: config::GatewayConfig,
 }

@@ -1,6 +1,31 @@
 [package]
 name = "sentinel-dashboard"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+sentinel-core = { workspace = true, features = ["std"] }
+leptos = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "WebSocket",
+    "MessageEvent",
+    "BinaryType",
+    "Window",
+    "Document",
+    "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
+    "AudioContext",
+    "OscillatorNode",
+    "GainNode",
+    "AudioDestinationNode",
+    "Location",
+] }
+console_error_panic_hook = "0.1"
+log = "0.4"

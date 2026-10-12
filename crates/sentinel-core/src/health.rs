@@ -77,7 +77,6 @@ pub const fn calculate_breakdown(reading: &FreezerReading) -> HealthBreakdown {
     calculate_breakdown_with_config(reading, HealthConfig::HOME_FREEZER)
 }
 
-/// Convenience alias — returns just the [`HealthScore`] for the default home-freezer config.
 #[inline]
 #[must_use]
 pub const fn calculate(reading: &FreezerReading) -> HealthScore {
